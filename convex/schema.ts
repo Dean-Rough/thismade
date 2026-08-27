@@ -12,10 +12,18 @@ export default defineSchema({
       v.literal("suspended"),
     ),
     checkoutReturnUrl: v.optional(v.string()),
+    // Stripe Connect Express (test-mode) payout onboarding — see convex/payouts.ts.
+    stripeConnectAccountId: v.optional(v.string()),
+    stripeConnectDetailsSubmitted: v.optional(v.boolean()),
+    stripeConnectChargesEnabled: v.optional(v.boolean()),
+    stripeConnectPayoutsEnabled: v.optional(v.boolean()),
     createdAt: v.number(),
   })
     .index("by_slug", ["slug"])
-    .index("by_owner_user_id", ["ownerUserId"]),
+    .index("by_owner_user_id", ["ownerUserId"])
+    // Stripe's account.updated webhook only carries the Connect account id,
+    // not our businessId, so lookups from the webhook go through this index.
+    .index("by_stripe_connect_account_id", ["stripeConnectAccountId"]),
 
   // Every row below this point is businessId-scoped from day one.
   // Cross-tenant reads/writes must resolve to "not found", never "forbidden" —
@@ -41,6 +49,18 @@ export default defineSchema({
     .index("by_business", ["businessId"])
     .index("by_hashed_key", ["hashedKey"]),
 
+  products: defineTable({
+    businessId: v.id("businesses"),
+    title: v.string(),
+    description: v.string(),
+    priceAmountCents: v.number(),
+    currency: v.string(),
+    stripeProductId: v.optional(v.string()),
+    stripePriceId: v.optional(v.string()),
+    status: v.union(v.literal("active"), v.literal("draft"), v.literal("archived")),
+    deliverableFileUrl: v.optional(v.string()),
+  }).index("by_business", ["businessId"]),
+
   // Backs the Idempotency-Key middleware for /v1 mutation endpoints.
   idempotencyKeys: defineTable({
     businessId: v.id("businesses"),
@@ -55,4 +75,14 @@ export default defineSchema({
   })
     // One key is unique per business + route (not globally) — see api_reference §Idempotency.
     .index("by_business_route_key", ["businessId", "route", "key"]),
+
+  // Tenancy wrapper around Convex's own (business-agnostic) file storage —
+  // see DECISIONS.md Phase 2 §files for why this table exists and how
+  // `files.completeUpload` uses it to enforce the cross-tenant 404 contract.
+  files: defineTable({
+    businessId: v.id("businesses"),
+    storageId: v.optional(v.id("_storage")), // Set once the upload completes.
+    status: v.union(v.literal("pending"), v.literal("complete")),
+    createdAt: v.number(),
+  }).index("by_business", ["businessId"]),
 });
