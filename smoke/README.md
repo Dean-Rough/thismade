@@ -106,3 +106,12 @@ steps above.
   directly on the dev server's command line, which takes precedence over
   anything already in the environment:
   `env STRIPE_WEBHOOK_SECRET="whsec_..." npm run dev`.
+- **Never pass `--print-secret` together with `--forward-to`.** The Stripe
+  CLI treats `--print-secret` as "only print the webhook signing secret and
+  exit" — it does not keep forwarding events afterward. Run
+  `stripe listen --forward-to ...` (no `--print-secret`) to actually forward
+  events; its startup line prints the same signing secret anyway. A run
+  that starts `stripe listen --forward-to ... --print-secret` in the
+  background will look like it's listening (the process was started) but
+  has already exited, so the "order recorded" step will time out waiting
+  for a webhook that's never coming.
