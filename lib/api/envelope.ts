@@ -13,6 +13,7 @@ export type ErrorCode =
   | "validation_failed"
   | "rate_limited"
   | "idempotency_conflict"
+  | "refund_already_issued"
   | "internal";
 
 const ERROR_STATUS: Record<ErrorCode, number> = {
@@ -22,6 +23,7 @@ const ERROR_STATUS: Record<ErrorCode, number> = {
   validation_failed: 400,
   rate_limited: 429,
   idempotency_conflict: 409,
+  refund_already_issued: 409,
   internal: 500,
 };
 
