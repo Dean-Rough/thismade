@@ -17,6 +17,7 @@ import type * as apiKeys from "../apiKeys.js";
 import type * as businesses from "../businesses.js";
 import type * as files from "../files.js";
 import type * as idempotencyKeys from "../idempotencyKeys.js";
+import type * as orders from "../orders.js";
 import type * as payouts from "../payouts.js";
 import type * as products from "../products.js";
 
@@ -25,6 +26,7 @@ const fullApi: ApiFromModules<{
   businesses: typeof businesses;
   files: typeof files;
   idempotencyKeys: typeof idempotencyKeys;
+  orders: typeof orders;
   payouts: typeof payouts;
   products: typeof products;
 }> = anyApi as any;

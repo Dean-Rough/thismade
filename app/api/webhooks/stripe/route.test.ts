@@ -7,14 +7,22 @@ const SECRET = "whsec_test_fake";
 
 // Fake Convex backend mocking the wire boundary (`convex/browser`), matching
 // app/v1/business/route.test.ts — proves the webhook drives the real
-// payouts:updateConnectStatusByStripeAccountId mutation end to end.
+// payouts:updateConnectStatusByStripeAccountId and
+// orders:createFromCheckoutSession mutations end to end. The orders map
+// mirrors orders.createFromCheckoutSession's real check-then-insert-on-
+// stripeCheckoutSessionId semantics closely enough to prove the webhook
+// itself is idempotent end-to-end.
 const backend = vi.hoisted(() => {
   const businesses = new Map<string, any>();
   const mutationCalls: any[] = [];
+  const orders = new Map<string, any>();
+  let orderCounter = 0;
 
   function reset() {
     businesses.clear();
     mutationCalls.length = 0;
+    orders.clear();
+    orderCounter = 0;
   }
 
   function seedBusiness(accountId: string) {
@@ -43,12 +51,34 @@ const backend = vi.hoisted(() => {
         }
         return null;
       }
+      case "orders:createFromCheckoutSession": {
+        for (const order of orders.values()) {
+          if (order.stripeCheckoutSessionId === args.stripeCheckoutSessionId) {
+            return order;
+          }
+        }
+        orderCounter += 1;
+        const id = `order_${orderCounter}`;
+        const order = {
+          _id: id,
+          businessId: args.businessId,
+          productId: args.productId,
+          customerEmail: args.customerEmail,
+          amountCents: args.amountCents,
+          currency: args.currency,
+          status: "paid",
+          stripeCheckoutSessionId: args.stripeCheckoutSessionId,
+          createdAt: 0,
+        };
+        orders.set(id, order);
+        return order;
+      }
       default:
         throw new Error(`Unhandled fake Convex function in test: ${name}`);
     }
   }
 
-  return { businesses, mutationCalls, reset, seedBusiness, dispatch };
+  return { businesses, mutationCalls, orders, reset, seedBusiness, dispatch };
 });
 
 vi.mock("convex/browser", async () => {
@@ -95,6 +125,29 @@ function webhookRequest(payload: string, signatureHeader: string | null) {
     headers,
     body: payload,
   });
+}
+
+function checkoutCompletedEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "evt_checkout_1",
+    type: "checkout.session.completed",
+    data: {
+      object: {
+        id: "cs_test_abc",
+        amount_total: 1500,
+        currency: "usd",
+        customer_details: { email: "buyer@example.com" },
+        metadata: { businessId: "business_1", productId: "product_1" },
+        ...overrides,
+      },
+    },
+  };
+}
+
+async function signedCheckoutRequest(event: unknown) {
+  const payload = JSON.stringify(event);
+  const header = await sign(payload, Math.floor(Date.now() / 1000));
+  return webhookRequest(payload, header);
 }
 
 beforeEach(() => {
@@ -178,5 +231,39 @@ describe("POST /api/webhooks/stripe", () => {
 
     expect(res.status).toBe(200);
     expect(backend.mutationCalls).toHaveLength(0);
+  });
+
+  it("creates exactly one order on checkout.session.completed", async () => {
+    const res = await POST(await signedCheckoutRequest(checkoutCompletedEvent()));
+    expect(res.status).toBe(200);
+    expect(backend.orders.size).toBe(1);
+
+    const order = [...backend.orders.values()][0];
+    expect(order.businessId).toBe("business_1");
+    expect(order.productId).toBe("product_1");
+    expect(order.customerEmail).toBe("buyer@example.com");
+    expect(order.amountCents).toBe(1500);
+    expect(order.currency).toBe("usd");
+    expect(order.stripeCheckoutSessionId).toBe("cs_test_abc");
+  });
+
+  it("creates exactly one order even when the same event is redelivered", async () => {
+    const event = checkoutCompletedEvent();
+
+    const first = await POST(await signedCheckoutRequest(event));
+    expect(first.status).toBe(200);
+
+    // Simulates Stripe redelivering the identical checkout.session.completed
+    // event (retry after a timeout, or a manual resend from the dashboard).
+    const second = await POST(await signedCheckoutRequest(event));
+    expect(second.status).toBe(200);
+
+    expect(backend.orders.size).toBe(1);
+  });
+
+  it("acknowledges (200) but does not create an order for a session missing our metadata", async () => {
+    const res = await POST(await signedCheckoutRequest(checkoutCompletedEvent({ metadata: {} })));
+    expect(res.status).toBe(200);
+    expect(backend.orders.size).toBe(0);
   });
 });

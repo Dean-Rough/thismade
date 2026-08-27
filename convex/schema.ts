@@ -85,4 +85,29 @@ export default defineSchema({
     status: v.union(v.literal("pending"), v.literal("complete")),
     createdAt: v.number(),
   }).index("by_business", ["businessId"]),
+
+  // First written by the checkout.session.completed webhook (convex/orders.ts,
+  // app/api/webhooks/stripe/route.ts); read/mutated by the Orders API ticket.
+  // `status` only tracks paid/refunded — shipped/refunded are independent
+  // facts (a shipped order can later be refunded), so they're their own
+  // optional fields rather than folded into a single mutually-exclusive
+  // status union. See DECISIONS.md §orders.
+  orders: defineTable({
+    businessId: v.id("businesses"),
+    productId: v.id("products"),
+    customerEmail: v.string(),
+    amountCents: v.number(),
+    currency: v.string(),
+    status: v.union(v.literal("paid"), v.literal("refunded")),
+    shippedAt: v.optional(v.number()),
+    shippingTrackingCode: v.optional(v.string()),
+    refundedAt: v.optional(v.number()),
+    stripeCheckoutSessionId: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_business", ["businessId"])
+    // Redelivered webhooks (Stripe retries checkout.session.completed on
+    // timeout, or a manual resend) must not create a second order — see
+    // orders.createFromCheckoutSession's check-then-insert against this index.
+    .index("by_stripe_session", ["stripeCheckoutSessionId"]),
 });
