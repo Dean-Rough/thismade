@@ -91,11 +91,11 @@ async function call(
  * setup: `npm install --save-dev playwright && npx playwright install
  * chromium` (see smoke/README.md).
  *
- * Selectors are best-effort: written from Stripe's documented Checkout
- * fields, but not visually verified against a live page from this sandbox
- * (no Stripe credentials were available while writing this). If Stripe's
- * markup has drifted, the first live run is expected to need selector
- * fixes here.
+ * Selectors are verified against a live test-mode Checkout session (see
+ * git history for the first-live-run fixes) — the card fields expose
+ * aria-label ("Card number", "Expiration", "CVC"), not the placeholder
+ * text originally guessed. If Stripe's markup drifts again, re-run
+ * `npm run test:e2e` and adjust the failing locator here.
  */
 async function completeHostedCheckout(checkoutUrl: string, email: string): Promise<string> {
   const playwrightModuleSpecifier = "playwright";
@@ -116,10 +116,16 @@ async function completeHostedCheckout(checkoutUrl: string, email: string): Promi
     await page.goto(checkoutUrl, { waitUntil: "domcontentloaded" });
 
     await page.getByLabel(/email/i).fill(email);
-    await page.getByPlaceholder(/card number/i).fill("4242424242424242");
-    await page.getByPlaceholder(/mm\s*\/\s*yy/i).fill("12/34");
-    await page.getByPlaceholder(/cvc/i).fill("123");
-    const nameField = page.getByLabel(/cardholder name/i);
+    // Stripe's hosted Checkout card fields expose aria-label (e.g. "Card
+    // number", "Expiration") rather than matching placeholder text
+    // ("1234 1234 1234 1234"), confirmed against a live test-mode session.
+    await page.getByLabel(/card number/i).fill("4242424242424242");
+    await page.getByLabel(/expiration/i).fill("12/34");
+    // A decorative SVG icon shares the same aria-label as the CVC input, so
+    // getByLabel alone is ambiguous (strict-mode violation) — scope to the
+    // textbox role.
+    await page.getByRole("textbox", { name: /cvc/i }).fill("123");
+    const nameField = page.getByPlaceholder(/full name on card|cardholder name/i);
     if (await nameField.count()) await nameField.fill("Smoke Test");
     const postalField = page.getByPlaceholder(/postal code|zip/i);
     if (await postalField.count()) await postalField.fill("94103");

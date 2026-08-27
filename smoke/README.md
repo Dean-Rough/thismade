@@ -85,12 +85,24 @@ steps above.
 
 ## Known limitations / things to check on first live run
 
-- The Checkout-page selectors in `completeHostedCheckout()` were written from
-  Stripe's documented field labels/placeholders, not visually verified
-  against a live page — this repo's build sandbox has no Stripe credentials.
-  If Stripe's Checkout markup has drifted, expect to adjust selectors on the
-  first real run.
 - No cleanup step deletes the throwaway Stripe test-mode Products/Prices/
   Connect accounts this test creates — harmless in test mode (no real money,
   no real charges), but the test-mode dashboard will accumulate smoke-test
   rows over repeated runs.
+- **Stripe Connect must be enabled on the test-mode account before the
+  Connect onboarding-link test can pass.** This is a one-time Dashboard
+  action (Settings → Connect → "Get started", accepting the Connect
+  Platform Agreement) — the same category of third-party-ToS acceptance as
+  the original account signup, so it's a human action, not something an
+  agent should do on the account owner's behalf. Until it's done,
+  `POST /v1/payouts/onboarding-link` returns 500 with a Stripe
+  `invalid_request_error` ("You can only create new accounts if you've
+  signed up for Connect...").
+- If running this in an environment (e.g. a Paperclip agent run) that
+  pre-injects `STRIPE_WEBHOOK_SECRET` as an **empty string** rather than
+  leaving it unset, `.env.local`'s value will silently lose — dotenv-style
+  loaders only fill in a var that's completely absent from `process.env`,
+  not one that's merely empty. Work around it by passing the real value
+  directly on the dev server's command line, which takes precedence over
+  anything already in the environment:
+  `env STRIPE_WEBHOOK_SECRET="whsec_..." npm run dev`.

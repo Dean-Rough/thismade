@@ -82,7 +82,22 @@ export async function withIdempotency(
   }
 
   const recordId = claim.id;
-  const response = await handler();
+  // A handler exception must still resolve the claim: leaving it
+  // "in_progress" would permanently 409 every future retry of this same
+  // (business, route, key) triple, since beginOrReplay treats any
+  // in_progress row as a conflict regardless of age. Converting the
+  // exception into the standard `internal` error envelope also keeps the
+  // {error:{code,message,docs_url}} contract intact for upstream failures
+  // (e.g. Stripe), not just the errors each route already anticipates.
+  let response: NextResponse;
+  try {
+    response = await handler();
+  } catch (err) {
+    response = apiError(
+      "internal",
+      err instanceof Error ? err.message : "An unexpected error occurred.",
+    );
+  }
   const responseBody = await response.clone().text();
 
   await client.mutation(api.idempotencyKeys.complete, {

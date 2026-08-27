@@ -2,11 +2,9 @@
 /**
  * Generated data model types.
  *
- * Hand-generated offline (matches the output of `npx convex codegen`) because
- * this sandbox has no network access to authenticate a Convex deployment.
- * Regenerate with `npx convex dev` once real deployment credentials exist —
- * see DECISIONS.md.
+ * THIS CODE IS AUTOMATICALLY GENERATED.
  *
+ * To regenerate, run `npx convex dev`.
  * @module
  */
 
@@ -29,7 +27,10 @@ export type TableNames = TableNamesInDataModel<DataModel>;
  *
  * @typeParam TableName - A string literal type of the table name (like "users").
  */
-export type Doc<TableName extends TableNames> = DocumentByName<DataModel, TableName>;
+export type Doc<TableName extends TableNames> = DocumentByName<
+  DataModel,
+  TableName
+>;
 
 /**
  * An identifier for a document in Convex.
@@ -44,7 +45,8 @@ export type Doc<TableName extends TableNames> = DocumentByName<DataModel, TableN
  *
  * @typeParam TableName - A string literal type of the table name (like "users").
  */
-export type Id<TableName extends TableNames | SystemTableNames> = GenericId<TableName>;
+export type Id<TableName extends TableNames | SystemTableNames> =
+  GenericId<TableName>;
 
 /**
  * A type describing your Convex data model.

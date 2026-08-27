@@ -1,8 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { readIdempotencyKey } from "./idempotency";
+import { readIdempotencyKey, withIdempotency } from "./idempotency";
 
 function requestWith(headers: Record<string, string>): Request {
   return new Request("https://example.com/v1/business", { headers });
+}
+
+// Minimal fake satisfying the two `client.mutation` calls withIdempotency
+// makes, in the fixed order it always makes them (beginOrReplay, then
+// complete) — no need for the full convex/browser mock other route tests
+// use, since withIdempotency never touches anything else on the client.
+function fakeConvexClient() {
+  const calls: Array<{ step: "beginOrReplay" | "complete"; args: any }> = [];
+  return {
+    calls,
+    client: {
+      mutation: async (_fnRef: any, args: any) => {
+        if (calls.length === 0) {
+          calls.push({ step: "beginOrReplay", args });
+          return { outcome: "began" as const, id: "idem_1" };
+        }
+        calls.push({ step: "complete", args });
+        return null;
+      },
+    } as any,
+  };
 }
 
 describe("readIdempotencyKey", () => {
@@ -30,5 +51,53 @@ describe("readIdempotencyKey", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("unreachable");
     expect(result.key).toBe("order-42-retry-1");
+  });
+});
+
+describe("withIdempotency", () => {
+  it("converts a handler exception into the internal error envelope, and completes (not strands) the claim", async () => {
+    const { client, calls } = fakeConvexClient();
+
+    const response = await withIdempotency(client, "business_1" as any, "POST /v1/payouts/onboarding-link", "key-1", "{}", async () => {
+      throw new Error("Stripe request to /accounts failed (400): not signed up for Connect");
+    });
+
+    expect(response.status).toBe(500);
+    const body = await response.clone().json();
+    expect(body).toEqual({
+      error: {
+        code: "internal",
+        message: "Stripe request to /accounts failed (400): not signed up for Connect",
+        docs_url: "https://docs.thismade.internal/api/errors#internal",
+      },
+    });
+
+    // The claim must resolve to "completed", not stay stuck "in_progress" —
+    // otherwise every future retry with this same key would 409 forever,
+    // even though the original request never actually succeeded.
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual({
+      step: "complete",
+      args: { id: "idem_1", responseStatus: 500, responseBody: JSON.stringify(body) },
+    });
+  });
+
+  it("still returns the handler's own response untouched on success", async () => {
+    const { client } = fakeConvexClient();
+
+    const response = await withIdempotency(
+      client,
+      "business_1" as any,
+      "POST /v1/products",
+      "key-2",
+      "{}",
+      async () => new Response(JSON.stringify({ data: { ok: true }, hint: null, next_action: null }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }) as any,
+    );
+
+    expect(response.status).toBe(201);
+    expect(await response.clone().json()).toEqual({ data: { ok: true }, hint: null, next_action: null });
   });
 });
