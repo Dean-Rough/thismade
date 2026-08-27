@@ -22,7 +22,8 @@ coverage/
 # OS
 .DS_Store
 
-# clerk configuration (can include secrets)
+# Leftover local state from Clerk's keyless dev mode (removed from the app,
+# but ignore this in case a stale directory lingers on a dev machine).
 /.clerk/
 .vercel
 .env*

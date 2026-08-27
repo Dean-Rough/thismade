@@ -1,4 +1,3 @@
-import { UserButton } from "@clerk/nextjs";
 import { Bell } from "lucide-react";
 
 import { ThemeToggle } from "@/components/theme/theme-toggle";
@@ -20,8 +19,6 @@ export function TopBar() {
           <Bell className="size-4" />
           <span className="absolute right-2 top-2 size-1.5 rounded-full bg-confirmation-pending" />
         </button>
-
-        <UserButton />
       </div>
     </header>
   );

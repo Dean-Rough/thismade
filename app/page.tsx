@@ -11,12 +11,9 @@ export default function Home() {
         <span className="font-mono text-sm tracking-tight text-ink-muted">thismade</span>
         <div className="flex items-center gap-2">
           <ThemeToggle />
-          <Button variant="ghost" asChild>
-            <Link href="/sign-in">Sign in</Link>
-          </Button>
           <Button asChild>
-            <Link href="/sign-up">
-              Sign up <ArrowRight />
+            <Link href="/dashboard">
+              Open dashboard <ArrowRight />
             </Link>
           </Button>
         </div>
@@ -36,12 +33,9 @@ export default function Home() {
         </p>
         <div className="flex items-center gap-3 pt-2">
           <Button size="lg" asChild>
-            <Link href="/sign-up">
-              Get started <ArrowRight />
+            <Link href="/dashboard">
+              Open dashboard <ArrowRight />
             </Link>
-          </Button>
-          <Button size="lg" variant="outline" asChild>
-            <Link href="/sign-in">Sign in</Link>
           </Button>
         </div>
       </section>

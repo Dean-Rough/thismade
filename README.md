@@ -1,12 +1,18 @@
 # thismade
 
-Internal platform foundation. Next.js 15 (App Router) + React 19 + TypeScript + Tailwind, Convex, Clerk.
+Internal platform foundation. Next.js 15 (App Router) + React 19 + TypeScript + Tailwind, Convex.
+
+Clerk has been removed. The app currently has no app-level auth gate at all —
+`/dashboard` renders publicly. Vercel Authentication (deployment protection)
+was considered as a replacement gate but is all-or-nothing across the whole
+origin, including the public `/v1` Bearer-key API and the Stripe webhook, so
+it has not been enabled pending a decision — see `DECISIONS.md`.
 
 ## Setup
 
 ```bash
 npm install
-cp .env.example .env.local   # fill in Clerk + Convex values
+cp .env.example .env.local   # fill in Convex values
 npx convex dev                # first run: authenticates and generates convex/_generated (see DECISIONS.md)
 npm run dev
 ```

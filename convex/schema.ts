@@ -6,7 +6,7 @@ export default defineSchema({
   businesses: defineTable({
     name: v.string(),
     slug: v.string(),
-    ownerUserId: v.string(), // Clerk user id of the owning member.
+    ownerUserId: v.string(), // Owning member's user id; not populated from any real auth session yet (see DECISIONS.md Clerk-removal entry).
     lifecycleStatus: v.union(
       v.literal("active"),
       v.literal("suspended"),
