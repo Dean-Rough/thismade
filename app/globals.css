@@ -1,3 +1,51 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * Design-token values below must match `lib/design-tokens.ts` — see that
+ * file's header comment for the source of truth and rationale. HSL triplets
+ * (no `hsl()` wrapper) so Tailwind color utilities can apply opacity
+ * modifiers via `hsl(var(--x) / <alpha-value>)`, wired in tailwind.config.ts.
+ */
+@layer base {
+  :root {
+    --surface: 32 27% 96%;
+    --surface-raised: 0 0% 100%;
+    --ink: 27 19% 10%;
+    --ink-muted: 25 10% 42%;
+    --border: 30 18% 87%;
+    --accent: 18 68% 45%;
+    --accent-ink: 0 0% 100%;
+    --confirmation-pending: 43 74% 42%;
+    --confirmation-approved: 150 42% 33%;
+    --confirmation-rejected: 356 63% 43%;
+    --credit-ok: 150 42% 33%;
+    --credit-warning: 38 78% 46%;
+    --credit-exhausted: 356 63% 43%;
+  }
+
+  .dark {
+    --surface: 25 15% 8%;
+    --surface-raised: 24 13% 12%;
+    --ink: 36 33% 94%;
+    --ink-muted: 30 12% 65%;
+    --border: 27 12% 20%;
+    --accent: 22 78% 62%;
+    --accent-ink: 20 30% 10%;
+    --confirmation-pending: 43 74% 62%;
+    --confirmation-approved: 150 40% 55%;
+    --confirmation-rejected: 356 70% 66%;
+    --credit-ok: 150 40% 55%;
+    --credit-warning: 38 78% 62%;
+    --credit-exhausted: 356 70% 66%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-surface text-ink font-sans;
+  }
+}
