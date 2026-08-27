@@ -1,0 +1,3 @@
+In the shopface storefront repo, verify that the server-side SHOPFACE_CONVERSION_HANDOFF_SECRET is actually usable in the deployed Convex conversion-handoff path. The secret is confirmed configured for the Convex runtime, but never reveal, print, return, commit, or compare its plaintext.
+
+Perform a safe, non-customer-facing verification only: inspect the handoff signing/verification implementation and run the existing conversion-handoff test suite; then add or run the smallest non-production-saf

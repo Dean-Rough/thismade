@@ -1,0 +1,3 @@
+Update the public shopface marketing site at https://shopface.madethis.app with a restrained, premium editorial stock-photography layer across the homepage, pricing and about pages. This is an approved production change.
+
+Brand source of truth: https://madethis.com/files/d68f0d4f-eda2-4e57-a44c-0b81534b32d1. Preserve its dark technical/lime visual world, Archivo primary typography, IBM Plex Mono system labels, canonical two-tone shopface lockup, spacing and tone. Keep the existing offer facts ex

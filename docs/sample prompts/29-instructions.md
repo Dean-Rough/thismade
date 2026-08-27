@@ -1,0 +1,3 @@
+Update the shopface public marketing homepage hero to use the owner-provided Mux HLS stream as the background: https://stream.mux.com/Jwr2RhmsNrd6GEspBNgm02vJsRZAGlaoQIh4AucGdASw.m3u8
+
+Business: shopface. Brand kit source of truth: https://madethis.com/files/d68f0d4f-eda2-4e57-a44c-0b81534b32d1. Preserve its dark technical / lime visual world, Archivo + IBM Plex Mono, canonical logo use, restrained editorial feel, and balanced-rag heading requirement (`text-wrap: balance` where supported; do not

@@ -1,0 +1,19 @@
+# OWNER — Human Partner
+
+- **Name**: Dean Newton
+- **Email**: dean@rough.ink
+
+## Professional Profile (auto-enriched)
+- **Summary**: Dean Newton is Creative Director at ROUGH, an Edinburgh-based multidisciplinary design studio. His work spans spaces, interiors, branding, and digital design, with apparent hospitality-sector projects including Glasgow venues in the Superlative collection.
+- **Title**: Creative Director
+- **Company**: ROUGH
+- **Location**: Edinburgh, Scotland, United Kingdom
+- **Industry**: Design Services
+- **Projects**: Vinting — AI Listing Filler, Gost, Blue Dog, The Delphine, The Noble, Glaschu, The Clubhouse, Maison, The Duke’s Umbrella
+- **Content Topics**: recipes, food, hospitality content
+- **Entrepreneurial Stage**: serial
+- **Estimated Audience**: <1k
+
+## Preferences
+
+## Communication Notes

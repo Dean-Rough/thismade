@@ -1,0 +1,5 @@
+# Website + Care catalog mirror
+
+- Added the Convex `products` table, indexed lookup, internal catalog mutations and public `products:list` query.
+- Provides the internal mutation flow used to mirror `Website + Care` under platform product ID `md7cj1wj0r2xea0hxrt9kp16qh8d61kj`.
+- The public pricing page reads its product title and standard monthly price from `products:list`; approved founding-rate, three-month-term and out-of-scope content-change terms remain explicit.
