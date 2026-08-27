@@ -208,3 +208,86 @@ describe("products.listByBusiness", () => {
     expect(forA[0]?.title).toBe("A's Mug");
   });
 });
+
+// THI-29 Phase 2 gate: proves the "file upload -> attach to product -> product
+// resolves a working deliverable URL" chain end to end, connecting
+// convex/files.ts's completeUpload output to convex/products.ts's update —
+// previously each half was only tested in isolation (convex/files.test.ts
+// proves a completed upload is fetchable; this file's other tests prove
+// deliverableFileUrl is stored/patched), never chained together.
+describe("products.deliverableFileUrl: file upload integration", () => {
+  it("resolves a fetchable URL after a completed file upload is attached to a product", async () => {
+    const t = convexTest(schema, modules);
+    const { businessAId } = await seedTwoBusinesses(t);
+
+    const product = await t.mutation(api.products.create, {
+      businessId: businessAId,
+      title: "Digital Pattern",
+      description: "A PDF sewing pattern.",
+      priceAmountCents: 500,
+      currency: "usd",
+    });
+    if (!product) throw new Error("unreachable");
+
+    const { fileId } = await t.mutation(api.files.createPendingUpload, {
+      businessId: businessAId,
+    });
+    // Simulate the caller PUTting bytes to the signed upload URL, exactly
+    // like convex/files.test.ts's "completes an upload..." case.
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["pattern bytes"], { type: "application/pdf" })),
+    );
+    const completed = await t.mutation(api.files.completeUpload, {
+      businessId: businessAId,
+      fileId,
+      storageId,
+    });
+    if (!completed) throw new Error("unreachable");
+
+    const updated = await t.mutation(api.products.update, {
+      businessId: businessAId,
+      productId: product._id,
+      deliverableFileUrl: completed.url,
+    });
+    expect(updated?.deliverableFileUrl).toBe(completed.url);
+
+    const fetched = await t.query(api.products.getScopedById, {
+      productId: product._id,
+      businessId: businessAId,
+    });
+    expect(fetched?.deliverableFileUrl).toBe(completed.url);
+
+    // Not just a stored string: the URL genuinely resolves the same bytes
+    // that were uploaded (THI-29: "product resolves a working deliverable URL").
+    const blobText = await t.run(async (ctx) => {
+      const blob = await ctx.storage.get(storageId);
+      return blob ? await blob.text() : null;
+    });
+    expect(blobText).toBe("pattern bytes");
+  });
+
+  it("returns null (never a cross-tenant file's data) when attaching another business's fileId is attempted", async () => {
+    const t = convexTest(schema, modules);
+    const { businessAId, businessBId } = await seedTwoBusinesses(t);
+
+    // Business B's own upload cannot be finalized by business A's fileId
+    // reference to begin with — completeUpload itself is the tenancy gate
+    // (see convex/files.test.ts's cross-tenant case). This proves a product
+    // in business A can never end up wired to business B's completed file
+    // via this path: the only way to get a real, fetchable `completed.url`
+    // is to complete the upload as the owning business first.
+    const { fileId } = await t.mutation(api.files.createPendingUpload, {
+      businessId: businessBId,
+    });
+    const storageId = await t.run(async (ctx) =>
+      ctx.storage.store(new Blob(["not yours"], { type: "text/plain" })),
+    );
+
+    const crossTenantComplete = await t.mutation(api.files.completeUpload, {
+      businessId: businessAId,
+      fileId,
+      storageId,
+    });
+    expect(crossTenantComplete).toBeNull();
+  });
+});

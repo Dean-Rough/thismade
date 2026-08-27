@@ -113,3 +113,92 @@ describe("orders.createFromCheckoutSession", () => {
     expect(forA[0]?.customerEmail).toBe("a@example.com");
   });
 });
+
+// THI-29 gate audit: products.test.ts and files.test.ts each have a direct
+// real-Convex-layer (not route-mock) cross-tenant test against getScoped;
+// this file didn't, even though getScopedById/markRefunded/markShipped all
+// route through the same shared helper (convex/lib/tenancy.ts). Added to
+// close that gap — mirrors convex/products.test.ts's
+// "returns null (never another business's document) on cross-tenant update".
+describe("orders: tenancy", () => {
+  it("returns null (never the document) when a different business fetches the same order id", async () => {
+    const t = convexTest(schema, modules);
+    const a = await seedBusinessWithActiveProduct(t, "orders-tenancy-a");
+    const b = await seedBusinessWithActiveProduct(t, "orders-tenancy-b");
+
+    const order = await t.mutation(api.orders.createFromCheckoutSession, {
+      businessId: a.businessId,
+      productId: a.productId,
+      customerEmail: "buyer@example.com",
+      amountCents: 1500,
+      currency: "usd",
+      stripeCheckoutSessionId: "cs_test_tenancy_get",
+    });
+    if (!order) throw new Error("unreachable");
+
+    const crossTenantFetch = await t.query(api.orders.getScopedById, {
+      orderId: order._id,
+      businessId: b.businessId,
+    });
+    expect(crossTenantFetch).toBeNull();
+  });
+
+  it("returns null (never refunds) when a different business calls markRefunded on the same order id", async () => {
+    const t = convexTest(schema, modules);
+    const a = await seedBusinessWithActiveProduct(t, "orders-tenancy-c");
+    const b = await seedBusinessWithActiveProduct(t, "orders-tenancy-d");
+
+    const order = await t.mutation(api.orders.createFromCheckoutSession, {
+      businessId: a.businessId,
+      productId: a.productId,
+      customerEmail: "buyer@example.com",
+      amountCents: 1500,
+      currency: "usd",
+      stripeCheckoutSessionId: "cs_test_tenancy_refund",
+    });
+    if (!order) throw new Error("unreachable");
+
+    const crossTenantRefund = await t.mutation(api.orders.markRefunded, {
+      businessId: b.businessId,
+      orderId: order._id,
+      refundedAt: Date.now(),
+    });
+    expect(crossTenantRefund).toBeNull();
+
+    const stillA = await t.query(api.orders.getScopedById, {
+      orderId: order._id,
+      businessId: a.businessId,
+    });
+    expect(stillA?.status).toBe("paid");
+  });
+
+  it("returns null (never ships) when a different business calls markShipped on the same order id", async () => {
+    const t = convexTest(schema, modules);
+    const a = await seedBusinessWithActiveProduct(t, "orders-tenancy-e");
+    const b = await seedBusinessWithActiveProduct(t, "orders-tenancy-f");
+
+    const order = await t.mutation(api.orders.createFromCheckoutSession, {
+      businessId: a.businessId,
+      productId: a.productId,
+      customerEmail: "buyer@example.com",
+      amountCents: 1500,
+      currency: "usd",
+      stripeCheckoutSessionId: "cs_test_tenancy_ship",
+    });
+    if (!order) throw new Error("unreachable");
+
+    const crossTenantShip = await t.mutation(api.orders.markShipped, {
+      businessId: b.businessId,
+      orderId: order._id,
+      shippedAt: Date.now(),
+      trackingCode: "hijacked-tracking",
+    });
+    expect(crossTenantShip).toBeNull();
+
+    const stillA = await t.query(api.orders.getScopedById, {
+      orderId: order._id,
+      businessId: a.businessId,
+    });
+    expect(stillA?.shippedAt).toBeUndefined();
+  });
+});

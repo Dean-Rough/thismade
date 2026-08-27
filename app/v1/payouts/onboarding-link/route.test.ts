@@ -266,4 +266,30 @@ describe("POST /v1/payouts/onboarding-link", () => {
     expect(secondBody).toEqual(firstBody);
     expect(fetchMock).toHaveBeenCalledTimes(2); // one account create + one account link, not four
   });
+
+  // THI-29 gate audit: GET /v1/payouts has a "never leaks another business's
+  // payout status" test; this route (the mutation half of Connect payouts)
+  // had no isolation test of any kind. There's no cross-tenant id to pass
+  // here (the business is derived from the API key), so the equivalent
+  // proof is that a business already mid-onboarding is left untouched by a
+  // *different* business's onboarding-link call using its own key.
+  it("never touches another business's existing Connect account when a different business onboards", async () => {
+    const businessAId = backend.seedBusiness({ name: "Alpha Co", slug: "alpha" });
+    backend.businesses.get(businessAId).stripeConnectAccountId = "acct_existing_alpha";
+    const businessBId = backend.seedBusiness({ name: "Beta Co", slug: "beta" });
+    await backend.seedApiKey({
+      businessId: businessBId,
+      hashedKey: await hashApiKey(RAW_KEY_MONEY),
+      scopes: ["money"],
+    });
+    vi.stubGlobal("fetch", fakeStripeFetch());
+
+    const res = await POST(postRequest({ bearer: RAW_KEY_MONEY, idempotencyKey: "req-1" }));
+    expect(res.status).toBe(200);
+
+    // Business B got its own fresh account, never Alpha's.
+    expect(backend.businesses.get(businessBId).stripeConnectAccountId).toBe("acct_test_1");
+    // Alpha's pre-existing account id is untouched.
+    expect(backend.businesses.get(businessAId).stripeConnectAccountId).toBe("acct_existing_alpha");
+  });
 });

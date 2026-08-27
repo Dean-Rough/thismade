@@ -11,16 +11,24 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "convex:dev": "convex dev"
   },
   "dependencies": {
     "@clerk/nextjs": "^6.11.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "convex": "^1.17.4",
+    "lucide-react": "^1.34.0",
     "next": "^15.1.4",
+    "next-themes": "^0.4.4",
+    "radix-ui": "^1.6.7",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
+    "@clerk/types": "^4.101.26",
     "@edge-runtime/vm": "^5.0.0",
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.4",
@@ -29,6 +37,7 @@
     "convex-test": "^0.0.37",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
+    "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }
