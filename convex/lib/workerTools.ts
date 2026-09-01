@@ -335,6 +335,34 @@ async function validateNavigationUrl(
   await planNavigationHop(rawUrl, new Set(), resolveHostname);
 }
 
+// THI-75: Chromium can act on <link rel="preconnect"> and
+// <link rel="dns-prefetch"> before any page script runs - preconnect opens a
+// real TCP/TLS connection as a warm-up with no HTTP request ever sent over
+// it, and dns-prefetch is a bare DNS lookup with no request at all, so
+// neither reliably surfaces as a Network-domain event the way an ordinary
+// subresource fetch does. That means either one could reach an attacker-
+// chosen host without ever passing through the pin/abort logic
+// planNavigationHop and the driver's mirrored pinHostname enforce. Stripping
+// these tags out of every document response before Chromium's HTML parser
+// sees them closes the gap regardless of whether a given Chromium build
+// happens to route preconnect through the same interception path as a
+// normal fetch. Exported so workerTools.test.ts can exercise it directly;
+// the mirror of this exact function ships as JS text inside
+// BROWSER_DRIVER_SCRIPT below (same "can't import this module from inside
+// the sandbox" reason as isBlockedIpv4/isBlockedIpv6).
+export function stripSpeculativeLinkTags(html: string): string {
+  return html.replace(/<link\b[^>]*>/gi, (tag) => {
+    const relMatch = tag.match(/\brel\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i);
+    if (!relMatch) return tag;
+    const relValue = relMatch[1].replace(/^["']|["']$/g, "").toLowerCase();
+    const relTokens = relValue.split(/\s+/).filter(Boolean);
+    if (relTokens.includes("preconnect") || relTokens.includes("dns-prefetch")) {
+      return "<!-- thismade: stripped speculative link -->";
+    }
+    return tag;
+  });
+}
+
 // A fresh Playwright launch per call, restoring only the last-visited URL
 // (not full DOM/session state) between calls — simple and correct rather
 // than fast. A persistent in-sandbox driver process is the natural follow-up
@@ -483,6 +511,71 @@ async function pinHostname(hostname, existingRules) {
 // unrouted-second-page window entirely, and routeWebSocket()/blocking
 // service workers closes the other two request paths context.route() still
 // can't see.
+//
+// THI-75: three more gaps in the same interception model, all lower
+// severity than the ones above because none give a page a way to read
+// arbitrary internal content back through itself - see the ticket for the
+// full severity reasoning:
+//   1. RTCPeerConnection's ICE candidate gathering can enumerate the
+//      sandbox's local/internal network interfaces with zero HTTP(S) or
+//      WebSocket request for context.route()/routeWebSocket() to see - none
+//      of navigate/click/read_page_text have any legitimate use for WebRTC,
+//      so the API is removed from every frame via an init script below.
+//   2. dns-prefetch is a bare DNS lookup with no HTTP request at all, so
+//      there's nothing for context.route() to intercept even in principle -
+//      closed two ways: stripSpeculativeLinkTags removes the <link> trigger
+//      from every document body, and --dns-prefetch-disable turns the
+//      browser feature off outright as a second layer (it also covers
+//      Chromium's other prefetch triggers, e.g. a Link response header,
+//      that a body rewrite alone wouldn't reach).
+//   3. preconnect opens a real TCP/TLS connection as a warm-up with no HTTP
+//      request ever sent over it, so it's unverified (no live E2B sandbox to
+//      check against) whether it surfaces as a Network-domain event the way
+//      an ordinary fetch does - closed via the same stripSpeculativeLinkTags
+//      rewrite regardless of the answer.
+function stripSpeculativeLinkTags(html) {
+  return html.replace(/<link\\b[^>]*>/gi, (tag) => {
+    const relMatch = tag.match(/\\brel\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)/i);
+    if (!relMatch) return tag;
+    const relValue = relMatch[1].replace(/^["']|["']$/g, "").toLowerCase();
+    const relTokens = relValue.split(/\\s+/).filter(Boolean);
+    if (relTokens.includes("preconnect") || relTokens.includes("dns-prefetch")) {
+      return "<!-- thismade: stripped speculative link -->";
+    }
+    return tag;
+  });
+}
+
+// maxRedirects: 0 on the route.fetch() below is load-bearing, not
+// incidental: without it, route.fetch() would silently follow a 3xx
+// response itself using Playwright's own request client, which never
+// re-enters context.route() - that would let a redirect skip the per-hop
+// DNS-pinning/private-IP check the outer loop in navigateWithPinning depends
+// on entirely. Falling back to route.continue() for a redirect response
+// hands it back to the normal CDP request flow instead, where it surfaces as
+// a fresh request and gets re-validated by this same handler exactly like
+// every other hop already is.
+async function allowRequest(route) {
+  if (route.request().resourceType() === "document") {
+    try {
+      const response = await route.fetch({ maxRedirects: 0 });
+      const status = response.status();
+      if (status >= 300 && status < 400) {
+        await route.continue();
+        return;
+      }
+      const body = await response.text();
+      await route.fulfill({ response, body: stripSpeculativeLinkTags(body) });
+      return;
+    } catch {
+      // Fetch/rewrite failed for a reason unrelated to the validation above
+      // (already passed) - fall through to a plain continue rather than
+      // failing the whole navigation over a cosmetic rewrite.
+    }
+  }
+  await route.continue();
+}
+
 async function navigateWithPinning(targetUrl, rules) {
   let currentRules = rules.slice();
   let pendingUrl = targetUrl;
@@ -491,14 +584,40 @@ async function navigateWithPinning(targetUrl, rules) {
     const rule = await pinHostname(hostname, currentRules);
     if (rule) currentRules.push(rule);
 
-    const browser = await chromium.launch(
-      currentRules.length ? { args: ["--host-resolver-rules=" + currentRules.join(",")] } : {},
-    );
+    const launchArgs = [
+      "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+      "--dns-prefetch-disable",
+    ];
+    if (currentRules.length) {
+      launchArgs.push("--host-resolver-rules=" + currentRules.join(","));
+    }
+    const browser = await chromium.launch({ args: launchArgs });
     const context = await browser.newContext({ serviceWorkers: "block" });
     context.on("page", (extraPage) => {
       extraPage.close().catch(() => {});
     });
     await context.routeWebSocket("**/*", (route) => route.close());
+    // THI-75: belt-and-suspenders alongside --force-webrtc-ip-handling-policy
+    // above - remove the constructors outright so a page can't construct an
+    // RTCPeerConnection at all, rather than relying only on a Chromium launch
+    // flag whose exact ICE-gathering behavior isn't independently verified
+    // here. Runs on every frame this context ever creates, including popups,
+    // before any page script does.
+    await context.addInitScript(() => {
+      for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection"]) {
+        try {
+          Object.defineProperty(window, name, {
+            configurable: false,
+            get() {
+              throw new Error(name + " is disabled in this sandbox");
+            },
+          });
+        } catch {
+          // Already non-configurable in this Chromium build - nothing more
+          // to do; the property can't be redefined by page script either.
+        }
+      }
+    });
     const page = await context.newPage();
     let redirectTarget = null;
     await context.route("**/*", async (route) => {
@@ -515,12 +634,12 @@ async function navigateWithPinning(targetUrl, rules) {
           await route.abort("blockedbyclient");
           return;
         }
-        await route.continue();
+        await allowRequest(route);
         return;
       }
       const pinned = currentRules.some((r) => r.startsWith("MAP " + reqHostname + " "));
       if (pinned) {
-        await route.continue();
+        await allowRequest(route);
         return;
       }
       // A hostname we haven't pinned yet - most commonly a top-level redirect
