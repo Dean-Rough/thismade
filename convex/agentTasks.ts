@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import { getScoped } from "./lib/tenancy";
 import { logEvent } from "./lib/events";
 import { spendCredits } from "./creditLedger";
@@ -45,7 +45,9 @@ const ALLOWED_TRANSITIONS: Record<string, ReadonlyArray<string>> = {
 // still rejects any (businessId, idempotencyKey) reuse whose amount doesn't
 // match ("credit_spend_conflict"), so even a guessed/colliding key can't
 // buy a bigger debit than it paid for.
-export const dispatch = mutation({
+// Internal-only (THI-56): every function here is fronted by the matching
+// action in agentTasksActions.ts, same pattern as THI-42.
+export const dispatch = internalMutation({
   args: {
     businessId: v.id("businesses"),
     title: v.string(),
@@ -128,14 +130,14 @@ export const dispatch = mutation({
 
 // Tenancy contract: a different business asking for the same id gets null,
 // indistinguishable from a nonexistent id — mirrors orders.getScopedById.
-export const getScopedById = query({
+export const getScopedById = internalQuery({
   args: { taskId: v.id("agentTasks"), businessId: v.id("businesses") },
   handler: async (ctx, args): Promise<Doc<"agentTasks"> | null> => {
     return getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
   },
 });
 
-export const listByBusiness = query({
+export const listByBusiness = internalQuery({
   args: { businessId: v.id("businesses") },
   handler: async (ctx, args) => {
     return ctx.db
@@ -145,7 +147,7 @@ export const listByBusiness = query({
   },
 });
 
-export const listByStatus = query({
+export const listByStatus = internalQuery({
   args: { businessId: v.id("businesses"), status: STATUS },
   handler: async (ctx, args) => {
     return ctx.db
@@ -161,7 +163,7 @@ export const listByStatus = query({
 // ALLOWED_TRANSITIONS and any transition at all on a circuit-broken task — a
 // task that has tripped its retry cap must surface for attention, not keep
 // moving through the board as if nothing happened.
-export const advanceStatus = mutation({
+export const advanceStatus = internalMutation({
   args: {
     businessId: v.id("businesses"),
     taskId: v.id("agentTasks"),
@@ -202,7 +204,7 @@ export const advanceStatus = mutation({
 // loops). Trips circuitBroken once attemptCount reaches maxAttempts so a
 // worker that keeps failing the same way stops and surfaces instead of
 // spinning through retries forever.
-export const recordAttemptFailure = mutation({
+export const recordAttemptFailure = internalMutation({
   args: {
     businessId: v.id("businesses"),
     taskId: v.id("agentTasks"),

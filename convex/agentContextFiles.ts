@@ -1,10 +1,13 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 
 // Storage layer only. The generated *content* for these files (SOUL/OWNER/
 // BUSINESS/PLATFORM/PLAYBOOK/RUNBOOK/MEMORY/CODE_MAP) is a separate,
 // Security & Compliance Reviewer-gated workstream — see THI-8's child
 // issues. No template text lives in this repo file.
+//
+// Internal-only (THI-56): every function here is fronted by the matching
+// action in agentContextFilesActions.ts, same pattern as THI-42.
 const FILE_KEY = v.union(
   v.literal("SOUL"),
   v.literal("OWNER"),
@@ -16,7 +19,7 @@ const FILE_KEY = v.union(
   v.literal("CODE_MAP"),
 );
 
-export const get = query({
+export const get = internalQuery({
   args: { businessId: v.id("businesses"), fileKey: FILE_KEY },
   handler: async (ctx, args) => {
     return ctx.db
@@ -28,7 +31,7 @@ export const get = query({
   },
 });
 
-export const listByBusiness = query({
+export const listByBusiness = internalQuery({
   args: { businessId: v.id("businesses") },
   handler: async (ctx, args) => {
     return ctx.db
@@ -41,7 +44,7 @@ export const listByBusiness = query({
 // Upsert: context files are singleton-per-(business, fileKey) — writing
 // again replaces the row rather than accumulating history. Revisit if a
 // later phase needs revision history on these files.
-export const upsert = mutation({
+export const upsert = internalMutation({
   args: {
     businessId: v.id("businesses"),
     fileKey: FILE_KEY,

@@ -1,12 +1,12 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
 
 async function makeBusiness(t: ReturnType<typeof convexTest>, slug: string) {
-  return t.mutation(api.businesses.create, {
+  return t.mutation(internal.businesses.create, {
     name: `Business ${slug}`,
     slug,
     ownerUserId: `user_${slug}`,
@@ -18,21 +18,21 @@ describe("agentContextFiles: upsert is a singleton per (business, fileKey)", () 
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "ctx-a");
 
-    await t.mutation(api.agentContextFiles.upsert, {
+    await t.mutation(internal.agentContextFiles.upsert, {
       businessId,
       fileKey: "SOUL",
       content: "draft v1",
     });
-    await t.mutation(api.agentContextFiles.upsert, {
+    await t.mutation(internal.agentContextFiles.upsert, {
       businessId,
       fileKey: "SOUL",
       content: "draft v2",
     });
 
-    const file = await t.query(api.agentContextFiles.get, { businessId, fileKey: "SOUL" });
+    const file = await t.query(internal.agentContextFiles.get, { businessId, fileKey: "SOUL" });
     expect(file?.content).toBe("draft v2");
 
-    const all = await t.query(api.agentContextFiles.listByBusiness, { businessId });
+    const all = await t.query(internal.agentContextFiles.listByBusiness, { businessId });
     expect(all.filter((f) => f.fileKey === "SOUL")).toHaveLength(1);
   });
 });
@@ -43,13 +43,13 @@ describe("agentContextFiles: tenancy", () => {
     const businessAId = await makeBusiness(t, "ctx-tenancy-a");
     const businessBId = await makeBusiness(t, "ctx-tenancy-b");
 
-    await t.mutation(api.agentContextFiles.upsert, {
+    await t.mutation(internal.agentContextFiles.upsert, {
       businessId: businessAId,
       fileKey: "OWNER",
       content: "A's owner profile",
     });
 
-    const bFile = await t.query(api.agentContextFiles.get, {
+    const bFile = await t.query(internal.agentContextFiles.get, {
       businessId: businessBId,
       fileKey: "OWNER",
     });
