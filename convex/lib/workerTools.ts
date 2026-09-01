@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+import { lookup as dnsLookup } from "node:dns/promises";
 import type { SandboxHandle } from "./sandboxProvider";
 
 export type WorkerType = "coding" | "browser" | "marketing";
@@ -149,6 +151,11 @@ export function assertToolAllowed(workerType: WorkerType, toolName: string): voi
 export interface ToolExecutionContext {
   sandbox?: SandboxHandle | null;
   readContextFile?: (fileKey: string) => Promise<string | null>;
+  // Injected for testability (same pattern as `sandbox`/`readContextFile`):
+  // production wiring leaves this unset and falls back to a real DNS lookup
+  // (see `resolveHostnameAddresses`), tests inject a fake so
+  // navigate-validation coverage never depends on live network/DNS.
+  resolveHostnameAddresses?: (hostname: string) => Promise<string[]>;
 }
 
 export interface ToolExecutionResult {
@@ -186,6 +193,99 @@ function resolveWorkspacePath(rawPath: string): string {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+// THI-71: the browser worker's prompt (workerPrompts.ts) tells the model it
+// "cannot download files" and only navigates/reads/clicks, but nothing
+// enforced that at the tool boundary — a `file://` URL plus read_page_text
+// was an unintended second path to CODING_TOOLS' read_file, which browser
+// workers are deliberately never given. This is the same defense-in-depth
+// posture as resolveWorkspacePath's `..`-segment rejection above: E2B's
+// sandbox network isolation is a second layer, not the only one.
+const ALLOWED_NAVIGATE_PROTOCOLS = new Set(["http:", "https:"]);
+
+function isBlockedIpv4(address: string): boolean {
+  const octets = address.split(".");
+  if (octets.length !== 4) return true;
+  const parts = octets.map(Number);
+  if (parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return true;
+  }
+  const [a, b] = parts;
+  if (a === 0) return true; // 0.0.0.0/8 - unspecified / "this network"
+  if (a === 127) return true; // 127.0.0.0/8 - loopback
+  if (a === 10) return true; // 10.0.0.0/8
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16
+  if (a === 169 && b === 254) return true; // 169.254.0.0/16 - link-local + cloud metadata (169.254.169.254)
+  return false;
+}
+
+function isBlockedIpv6(address: string): boolean {
+  const normalized = address.toLowerCase();
+  if (normalized === "::1" || normalized === "::") return true; // loopback / unspecified
+  const ipv4Mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (ipv4Mapped) return isBlockedIpv4(ipv4Mapped[1]);
+  const firstHextet = parseInt(normalized.split(":")[0] || "", 16);
+  if (Number.isNaN(firstHextet)) return true; // unparseable - fail closed
+  if (firstHextet >= 0xfc00 && firstHextet <= 0xfdff) return true; // fc00::/7 - unique local
+  if (firstHextet >= 0xfe80 && firstHextet <= 0xfebf) return true; // fe80::/10 - link-local
+  return false;
+}
+
+function isBlockedIpAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) return isBlockedIpv4(address);
+  if (family === 6) return isBlockedIpv6(address);
+  return true; // not a recognizable IP literal - fail closed rather than guess
+}
+
+async function resolveHostnameAddresses(hostname: string): Promise<string[]> {
+  const records = await dnsLookup(hostname, { all: true });
+  return records.map((record) => record.address);
+}
+
+// Validates a navigate() target before it ever reaches the sandbox's
+// Playwright driver: rejects non-http(s) schemes (file:, javascript:, data:,
+// …) and rejects loopback/private/link-local/metadata-range IPs, whether
+// given as a literal or reached by resolving a hostname. Fails closed on any
+// parse/lookup failure - an unverifiable target is not a safe target.
+async function validateNavigationUrl(
+  rawUrl: string,
+  resolveHostname: (hostname: string) => Promise<string[]>,
+): Promise<void> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`navigate_blocked:unparseable_url:${rawUrl}`);
+  }
+
+  if (!ALLOWED_NAVIGATE_PROTOCOLS.has(parsed.protocol)) {
+    throw new Error(`navigate_blocked:disallowed_scheme:${parsed.protocol}`);
+  }
+
+  const hostname = parsed.hostname.replace(/^\[/, "").replace(/\]$/, "");
+  if (!hostname) {
+    throw new Error(`navigate_blocked:missing_host:${rawUrl}`);
+  }
+
+  if (isIP(hostname)) {
+    if (isBlockedIpAddress(hostname)) {
+      throw new Error(`navigate_blocked:private_address:${hostname}`);
+    }
+    return;
+  }
+
+  let addresses: string[];
+  try {
+    addresses = await resolveHostname(hostname);
+  } catch {
+    throw new Error(`navigate_blocked:dns_resolution_failed:${hostname}`);
+  }
+  if (addresses.length === 0 || addresses.some((address) => isBlockedIpAddress(address))) {
+    throw new Error(`navigate_blocked:private_address:${hostname}`);
+  }
 }
 
 // A fresh Playwright launch per call, restoring only the last-visited URL
@@ -331,7 +431,9 @@ export async function executeTool(
     }
     case "navigate": {
       if (!ctx.sandbox) throw new Error("sandbox_required");
-      return runBrowserAction(ctx.sandbox, "navigate", { url: String(args.url ?? "") });
+      const url = String(args.url ?? "");
+      await validateNavigationUrl(url, ctx.resolveHostnameAddresses ?? resolveHostnameAddresses);
+      return runBrowserAction(ctx.sandbox, "navigate", { url });
     }
     case "click": {
       if (!ctx.sandbox) throw new Error("sandbox_required");
