@@ -17,6 +17,13 @@ const STATUS = v.union(
   v.literal("done"),
 );
 
+const ACTOR = v.union(
+  v.literal("owner"),
+  v.literal("ceo"),
+  v.literal("worker"),
+  v.literal("system"),
+);
+
 // Public entry points for convex/agentTasks.ts's internal functions, gated
 // by the shared service secret (THI-56, same pattern as THI-42).
 //
@@ -32,6 +39,7 @@ export const dispatch = action({
     workerType: WORKER_TYPE,
     dispatchKey: v.string(),
     instructions: v.string(),
+    containsUntrustedContent: v.boolean(),
     creditCost: v.number(),
     maxAttempts: v.optional(v.number()),
     secret: v.string(),
@@ -75,6 +83,7 @@ export const advanceStatus = action({
     businessId: v.id("businesses"),
     taskId: v.id("agentTasks"),
     toStatus: STATUS,
+    actor: ACTOR,
     secret: v.string(),
   },
   handler: async (ctx, { secret, ...args }): Promise<Doc<"agentTasks"> | null> => {

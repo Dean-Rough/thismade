@@ -139,6 +139,11 @@ export default defineSchema({
     // dispatchKey) — see agentTasks.dispatch. Stored on the row too so the
     // board can render "this task cost N credits" without a ledger join.
     creditCost: v.number(),
+    // Trust-boundary tag (THI-62): the dispatcher's explicit declaration of
+    // whether `instructions` embeds lower-trust input (chat text, catalog
+    // copy, a webhook payload) rather than being purely its own words. No
+    // default — see agentTasks.dispatch for why the caller must say.
+    containsUntrustedContent: v.boolean(),
     attemptCount: v.number(),
     maxAttempts: v.number(),
     // Circuit breaker: set once attemptCount reaches maxAttempts on the same

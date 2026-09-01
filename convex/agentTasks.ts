@@ -18,6 +18,22 @@ const STATUS = v.union(
   v.literal("done"),
 );
 
+const ACTOR = v.union(
+  v.literal("owner"),
+  v.literal("ceo"),
+  v.literal("worker"),
+  v.literal("system"),
+);
+
+// Blast-radius caps on the free-text fields a worker's prompt is eventually
+// built from (THI-62: OWASP LLM01/LLM08 hardening). These don't make prompt
+// injection impossible — no length limit can — but they bound how much
+// attacker-influenced content a single dispatch can smuggle to a worker with
+// tool access, and reject the degenerate empty/absent-instructions case.
+const MAX_TITLE_LENGTH = 200;
+const MAX_DESCRIPTION_LENGTH = 4_000;
+const MAX_INSTRUCTIONS_LENGTH = 8_000;
+
 // Forward-only kanban lifecycle: todo -> in_progress -> needs_review -> done.
 // No other edge is legal — a worker or the CEO that wants to send work back
 // for another pass does so by dispatching a new task, not by rewinding this
@@ -47,6 +63,16 @@ const ALLOWED_TRANSITIONS: Record<string, ReadonlyArray<string>> = {
 // buy a bigger debit than it paid for.
 // Internal-only (THI-56): every function here is fronted by the matching
 // action in agentTasksActions.ts, same pattern as THI-42.
+//
+// Trust-boundary hardening (THI-62): `instructions` is what a worker later
+// executes against with real tool access, so this is the highest-blast-
+// radius input in the whole system (OWASP LLM01 prompt injection / LLM08
+// excessive agency). `containsUntrustedContent` has no default — the
+// dispatcher must explicitly say whether these instructions embed
+// lower-trust input (a chat message, catalog copy, a webhook payload) or
+// are its own words, so provenance is a conscious decision at the one
+// place it can still be made, not an assumption baked in later. Length caps
+// bound how much of that content a single dispatch can carry regardless.
 export const dispatch = internalMutation({
   args: {
     businessId: v.id("businesses"),
@@ -55,12 +81,22 @@ export const dispatch = internalMutation({
     workerType: WORKER_TYPE,
     dispatchKey: v.string(),
     instructions: v.string(),
+    containsUntrustedContent: v.boolean(),
     creditCost: v.number(),
     maxAttempts: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     if (args.maxAttempts !== undefined && args.maxAttempts < 1) {
       throw new Error("invalid_max_attempts");
+    }
+    if (args.title.length === 0 || args.title.length > MAX_TITLE_LENGTH) {
+      throw new Error("invalid_title_length");
+    }
+    if (args.description.length > MAX_DESCRIPTION_LENGTH) {
+      throw new Error("invalid_description_length");
+    }
+    if (args.instructions.length === 0 || args.instructions.length > MAX_INSTRUCTIONS_LENGTH) {
+      throw new Error("invalid_instructions_length");
     }
 
     // Scoped by businessId, not a global lookup — a caller-supplied
@@ -93,6 +129,7 @@ export const dispatch = internalMutation({
       status: "todo",
       dispatchKey: args.dispatchKey,
       creditCost: args.creditCost,
+      containsUntrustedContent: args.containsUntrustedContent,
       attemptCount: 0,
       maxAttempts: args.maxAttempts ?? 3,
       circuitBroken: false,
@@ -120,6 +157,7 @@ export const dispatch = internalMutation({
         taskId,
         workerType: args.workerType,
         instructions: args.instructions,
+        containsUntrustedContent: args.containsUntrustedContent,
       },
       createdAt: now,
     });
@@ -163,11 +201,22 @@ export const listByStatus = internalQuery({
 // ALLOWED_TRANSITIONS and any transition at all on a circuit-broken task — a
 // task that has tripped its retry cap must surface for attention, not keep
 // moving through the board as if nothing happened.
+//
+// Human-in-the-loop gate (THI-62): `needs_review -> done` is the one
+// transition that closes a task out for good, so it's the natural point to
+// enforce the review step the lifecycle's name already promises. `actor`
+// must now be supplied by every caller (fixing a real gap: this mutation
+// used to hardcode the logged actor to "system" regardless of who — worker,
+// CEO, or owner — actually asked for the transition), and only "owner" or
+// "ceo" may make that specific transition — a worker (or anything acting on
+// its behalf, including a worker redirected by injected instructions)
+// cannot unilaterally mark its own task done.
 export const advanceStatus = internalMutation({
   args: {
     businessId: v.id("businesses"),
     taskId: v.id("agentTasks"),
     toStatus: STATUS,
+    actor: ACTOR,
   },
   handler: async (ctx, args) => {
     const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
@@ -181,13 +230,21 @@ export const advanceStatus = internalMutation({
     if (!allowed.includes(args.toStatus)) {
       throw new Error(`invalid_transition:${task.status}->${args.toStatus}`);
     }
+    if (
+      task.status === "needs_review" &&
+      args.toStatus === "done" &&
+      args.actor !== "owner" &&
+      args.actor !== "ceo"
+    ) {
+      throw new Error("done_requires_owner_or_ceo_approval");
+    }
 
     const now = Date.now();
     await ctx.db.patch(args.taskId, { status: args.toStatus, updatedAt: now });
     await logEvent(ctx, {
       businessId: args.businessId,
       taskId: args.taskId,
-      actor: "system",
+      actor: args.actor,
       event: {
         kind: "status_change",
         taskId: args.taskId,
