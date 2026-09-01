@@ -71,7 +71,13 @@ export const grant = mutation({
 // effect that outran its credit check.
 //
 // Idempotent on (businessId, idempotencyKey): a dispatcher retry replays the
-// same spend and gets the same balanceAfter back instead of double-debiting.
+// same spend and gets the same balanceAfter back instead of double-debiting
+// — but only when the replay's amount actually matches what was originally
+// debited under that key. A mismatch throws "credit_spend_conflict" instead
+// of silently returning the old (smaller) balanceAfter: without this check,
+// anyone who could get a cheap spend recorded under a given key first (e.g.
+// calling the public `spend` mutation directly) could then have a much
+// larger spend under the same key wrongly treated as "already paid for."
 //
 // Exported as a plain function (not just the `spend` mutation below) so
 // another mutation — e.g. agentTasks.dispatch — can gate its own write in
@@ -87,7 +93,12 @@ export async function spendCredits(
     idempotencyKey: string;
     taskId?: Id<"agentTasks">;
   },
-): Promise<{ balanceAfter: number; replayed: boolean }> {
+): Promise<{
+  balanceAfter: number;
+  replayed: boolean;
+  transactionId?: Id<"creditTransactions">;
+  eventId?: Id<"agentEvents">;
+}> {
   if (args.amount <= 0) {
     throw new Error("spend_amount_must_be_positive");
   }
@@ -99,7 +110,10 @@ export async function spendCredits(
     )
     .unique();
   if (existing) {
-    return { balanceAfter: existing.balanceAfter, replayed: true };
+    if (existing.amount !== -args.amount) {
+      throw new Error("credit_spend_conflict");
+    }
+    return { balanceAfter: existing.balanceAfter, replayed: true, transactionId: existing._id };
   }
 
   const balanceRow = await getOrCreateBalanceRow(ctx, args.businessId);
@@ -110,7 +124,7 @@ export async function spendCredits(
   const balanceAfter = balanceRow.balance - args.amount;
   const now = Date.now();
   await ctx.db.patch(balanceRow._id, { balance: balanceAfter, updatedAt: now });
-  await ctx.db.insert("creditTransactions", {
+  const transactionId = await ctx.db.insert("creditTransactions", {
     businessId: args.businessId,
     amount: -args.amount,
     balanceAfter,
@@ -119,7 +133,7 @@ export async function spendCredits(
     idempotencyKey: args.idempotencyKey,
     createdAt: now,
   });
-  await logEvent(ctx, {
+  const eventId = await logEvent(ctx, {
     businessId: args.businessId,
     taskId: args.taskId,
     actor: "system",
@@ -133,7 +147,7 @@ export async function spendCredits(
     createdAt: now,
   });
 
-  return { balanceAfter, replayed: false };
+  return { balanceAfter, replayed: false, transactionId, eventId };
 }
 
 export const spend = mutation({

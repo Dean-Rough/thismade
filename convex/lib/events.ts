@@ -7,7 +7,10 @@ type RichContentEvent = Infer<typeof richContentEvent>;
 
 // Shared insert path so every mutation that appends to the timeline writes
 // the same shape — callers pass the already-typed event union variant
-// rather than hand-assembling the row.
+// rather than hand-assembling the row. Returns the inserted id so a caller
+// that logs an event before some other row it references exists yet (e.g.
+// creditLedger.spendCredits logging a credit_debit before the task it's for
+// has been created) can patch that link on afterward.
 export async function logEvent(
   ctx: GenericMutationCtx<any>,
   args: {
@@ -17,8 +20,8 @@ export async function logEvent(
     event: RichContentEvent;
     createdAt: number;
   },
-): Promise<void> {
-  await ctx.db.insert("agentEvents", {
+): Promise<Id<"agentEvents">> {
+  return ctx.db.insert("agentEvents", {
     businessId: args.businessId,
     taskId: args.taskId,
     actor: args.actor,

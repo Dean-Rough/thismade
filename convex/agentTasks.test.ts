@@ -52,7 +52,7 @@ describe("agentTasks: idempotent dispatch", () => {
     expect(all).toHaveLength(1);
   });
 
-  it("logs a typed dispatch event alongside the created task", async () => {
+  it("logs a typed dispatch event and a taskId-linked credit_debit event alongside the created task", async () => {
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "dispatch-b");
 
@@ -70,8 +70,9 @@ describe("agentTasks: idempotent dispatch", () => {
       businessId,
       taskId: task!._id,
     });
-    expect(events).toHaveLength(1);
-    expect(events[0].event.kind).toBe("dispatch");
+    const kinds = events.map((e) => e.event.kind);
+    expect(kinds).toContain("dispatch");
+    expect(kinds).toContain("credit_debit");
   });
 });
 
@@ -228,6 +229,56 @@ describe("agentTasks: circuit breaker", () => {
       }),
     ).rejects.toThrow("task_circuit_broken");
   });
+
+  it("rejects recordAttemptFailure on an already circuit-broken task instead of incrementing further", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "circuit-b");
+    const task = await t.mutation(api.agentTasks.dispatch, {
+      businessId,
+      title: "Flaky task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: "circuit-b:task-1",
+      instructions: "...",
+      creditCost: 10,
+      maxAttempts: 1,
+    });
+
+    await t.mutation(api.agentTasks.recordAttemptFailure, {
+      businessId,
+      taskId: task!._id,
+      errorMessage: "build failed: type error",
+    });
+
+    await expect(
+      t.mutation(api.agentTasks.recordAttemptFailure, {
+        businessId,
+        taskId: task!._id,
+        errorMessage: "build failed again",
+      }),
+    ).rejects.toThrow("task_circuit_broken");
+  });
+
+  it("rejects an invalid maxAttempts and creates no task", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "circuit-c");
+
+    await expect(
+      t.mutation(api.agentTasks.dispatch, {
+        businessId,
+        title: "Task",
+        description: "...",
+        workerType: "coding",
+        dispatchKey: "circuit-c:task-1",
+        instructions: "...",
+        creditCost: 10,
+        maxAttempts: 0,
+      }),
+    ).rejects.toThrow("invalid_max_attempts");
+
+    const all = await t.query(api.agentTasks.listByBusiness, { businessId });
+    expect(all).toHaveLength(0);
+  });
 });
 
 describe("agentTasks: credit-gated dispatch", () => {
@@ -297,5 +348,78 @@ describe("agentTasks: credit-gated dispatch", () => {
     });
 
     expect(await t.query(api.creditLedger.getBalance, { businessId })).toBe(1000 - 40);
+  });
+
+  it("rejects a dispatch whose credit spend collides with an unrelated already-recorded idempotencyKey at a different amount", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "credit-dispatch-c");
+
+    // Simulates an attacker (or a caller bug) that gets a cheap spend
+    // recorded under the exact key agentTasks.dispatch will derive from this
+    // dispatchKey, then tries to dispatch a much more expensive task under
+    // that same dispatchKey hoping the credit gate treats it as "already
+    // paid for."
+    await t.mutation(api.creditLedger.spend, {
+      businessId,
+      amount: 1,
+      reason: "attacker-controlled cheap spend",
+      idempotencyKey: "dispatch:credit-dispatch-c:task-1",
+    });
+
+    await expect(
+      t.mutation(api.agentTasks.dispatch, {
+        businessId,
+        title: "Task",
+        description: "...",
+        workerType: "coding",
+        dispatchKey: "credit-dispatch-c:task-1",
+        instructions: "...",
+        creditCost: 500,
+      }),
+    ).rejects.toThrow("credit_spend_conflict");
+
+    const all = await t.query(api.agentTasks.listByBusiness, { businessId });
+    expect(all).toHaveLength(0);
+    // Only the attacker's original 1-credit spend landed — dispatch created
+    // no task and took no additional credit.
+    expect(await t.query(api.creditLedger.getBalance, { businessId })).toBe(1000 - 1);
+  });
+});
+
+describe("agentTasks: dispatchKey is business-scoped", () => {
+  it("lets two businesses independently dispatch under the identical dispatchKey string", async () => {
+    const t = convexTest(schema, modules);
+    const businessAId = await makeBusiness(t, "dispatch-scope-a");
+    const businessBId = await makeBusiness(t, "dispatch-scope-b");
+
+    const taskA = await t.mutation(api.agentTasks.dispatch, {
+      businessId: businessAId,
+      title: "SECRET A ROADMAP",
+      description: "A's confidential task",
+      workerType: "coding",
+      dispatchKey: "plan-turn-1:task-1",
+      instructions: "...",
+      creditCost: 10,
+    });
+
+    const taskB = await t.mutation(api.agentTasks.dispatch, {
+      businessId: businessBId,
+      title: "B's own task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: "plan-turn-1:task-1",
+      instructions: "...",
+      creditCost: 10,
+    });
+
+    expect(taskB?._id).not.toBe(taskA?._id);
+    expect(taskB?.businessId).toBe(businessBId);
+    expect(taskB?.title).toBe("B's own task");
+    // B was debited for its own dispatch, not silently exempted because A
+    // already used the same dispatchKey string.
+    expect(await t.query(api.creditLedger.getBalance, { businessId: businessBId })).toBe(1000 - 10);
+
+    const bTasks = await t.query(api.agentTasks.listByBusiness, { businessId: businessBId });
+    expect(bTasks.map((t) => t.title)).not.toContain("SECRET A ROADMAP");
   });
 });

@@ -150,7 +150,7 @@ export default defineSchema({
   })
     .index("by_business", ["businessId"])
     .index("by_business_status", ["businessId", "status"])
-    .index("by_dispatch_key", ["dispatchKey"]),
+    .index("by_business_dispatch_key", ["businessId", "dispatchKey"]),
 
   // Phase 3: the typed richContent timeline every UI surface (chat, kanban
   // card detail, audit log) reads from instead of free-text logs.

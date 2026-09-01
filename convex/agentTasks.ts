@@ -39,9 +39,12 @@ const ALLOWED_TRANSITIONS: Record<string, ReadonlyArray<string>> = {
 // credit cost, and an execution trace"), dispatch spends creditCost from the
 // business's balance in this same mutation, before the task row is created —
 // an insufficient balance throws "insufficient_credit" and no task is
-// created at all. Reuses dispatchKey as the spend's idempotencyKey, so a
-// replayed dispatch (short-circuited above) never reaches the spend a
-// second time — one dispatch, one debit.
+// created at all. The spend's idempotencyKey is dispatchKey namespaced under
+// "dispatch:" (not the bare dispatchKey) so it can never collide with a key
+// someone chose for a direct creditLedger.spend call — spendCredits itself
+// still rejects any (businessId, idempotencyKey) reuse whose amount doesn't
+// match ("credit_spend_conflict"), so even a guessed/colliding key can't
+// buy a bigger debit than it paid for.
 export const dispatch = mutation({
   args: {
     businessId: v.id("businesses"),
@@ -54,19 +57,29 @@ export const dispatch = mutation({
     maxAttempts: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    if (args.maxAttempts !== undefined && args.maxAttempts < 1) {
+      throw new Error("invalid_max_attempts");
+    }
+
+    // Scoped by businessId, not a global lookup — a caller-supplied
+    // dispatchKey is predictable ("plan-turn-1:task-1"), so a global index
+    // would let one business's dispatchKey collide with another's and read
+    // back that other business's task.
     const existing = await ctx.db
       .query("agentTasks")
-      .withIndex("by_dispatch_key", (q) => q.eq("dispatchKey", args.dispatchKey))
+      .withIndex("by_business_dispatch_key", (q) =>
+        q.eq("businessId", args.businessId).eq("dispatchKey", args.dispatchKey),
+      )
       .unique();
     if (existing) {
       return existing;
     }
 
-    await spendCredits(ctx, {
+    const spendResult = await spendCredits(ctx, {
       businessId: args.businessId,
       amount: args.creditCost,
       reason: `dispatch: ${args.title}`,
-      idempotencyKey: args.dispatchKey,
+      idempotencyKey: `dispatch:${args.dispatchKey}`,
     });
 
     const now = Date.now();
@@ -84,6 +97,17 @@ export const dispatch = mutation({
       createdAt: now,
       updatedAt: now,
     });
+
+    // Back-fill taskId onto the credit debit's transaction row and event —
+    // the task doesn't exist yet when spendCredits runs, so it can't set
+    // this itself. Same mutation/transaction as the insert above, so this
+    // is still one atomic unit.
+    if (spendResult.transactionId) {
+      await ctx.db.patch(spendResult.transactionId, { taskId });
+    }
+    if (spendResult.eventId) {
+      await ctx.db.patch(spendResult.eventId, { taskId });
+    }
 
     await logEvent(ctx, {
       businessId: args.businessId,
@@ -188,6 +212,9 @@ export const recordAttemptFailure = mutation({
     const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
     if (!task) {
       return null;
+    }
+    if (task.circuitBroken) {
+      throw new Error("task_circuit_broken");
     }
     const attemptCount = task.attemptCount + 1;
     const circuitBroken = attemptCount >= task.maxAttempts;
