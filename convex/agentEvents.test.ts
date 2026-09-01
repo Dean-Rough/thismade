@@ -52,6 +52,71 @@ describe("agentEvents: chat", () => {
   });
 });
 
+describe("agentEvents: logWorkerEvent (THI-68 identity boundary)", () => {
+  async function makeTask(t: ReturnType<typeof convexTest>, slug: string) {
+    const businessId = await makeBusiness(t, slug);
+    await t.mutation(internal.creditLedger.grant, { businessId, amount: 100, reason: "test fixture" });
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: `${slug}:task-1`,
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+    });
+    return { businessId, taskId: task!._id };
+  }
+
+  it("logs a tool_call event with actor worker", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeTask(t, "worker-event-tool-call");
+
+    await t.mutation(internal.agentEvents.logWorkerEvent, {
+      businessId,
+      taskId,
+      actor: "worker",
+      event: { kind: "tool_call", taskId, toolName: "run_shell", argsSummary: '{"command":"ls"}' },
+    });
+
+    const events = await t.query(internal.agentEvents.listByTask, { businessId, taskId });
+    const toolCall = events.find((e) => e.event.kind === "tool_call");
+    expect(toolCall?.actor).toBe("worker");
+  });
+
+  it("logs a system-actor error event", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeTask(t, "worker-event-error");
+
+    await t.mutation(internal.agentEvents.logWorkerEvent, {
+      businessId,
+      taskId,
+      actor: "system",
+      event: { kind: "error", taskId, message: "e2b_api_key_not_configured" },
+    });
+
+    const events = await t.query(internal.agentEvents.listByTask, { businessId, taskId });
+    const errorEvent = events.find((e) => e.event.kind === "error");
+    expect(errorEvent?.actor).toBe("system");
+  });
+
+  it("rejects logging against a task from a different business", async () => {
+    const t = convexTest(schema, modules);
+    const { taskId } = await makeTask(t, "worker-event-tenancy-a");
+    const otherBusinessId = await makeBusiness(t, "worker-event-tenancy-b");
+
+    await expect(
+      t.mutation(internal.agentEvents.logWorkerEvent, {
+        businessId: otherBusinessId,
+        taskId,
+        actor: "worker",
+        event: { kind: "error", taskId, message: "should not land" },
+      }),
+    ).rejects.toThrow("task_not_found");
+  });
+});
+
 describe("agentEvents: chat text hardening (THI-62)", () => {
   it("rejects an empty chat message", async () => {
     const t = convexTest(schema, modules);

@@ -92,6 +92,32 @@ export const advanceStatus = action({
   },
 });
 
+// Identity boundary (THI-68): neither of these takes `actor` as an arg —
+// see agentTasks.beginWorkerRun/completeWorkerRun for why.
+export const beginWorkerRun = action({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+    secret: v.string(),
+  },
+  handler: async (ctx, { secret, ...args }): Promise<Doc<"agentTasks"> | null> => {
+    assertServiceSecret(secret);
+    return ctx.runMutation(internal.agentTasks.beginWorkerRun, args);
+  },
+});
+
+export const completeWorkerRun = action({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+    secret: v.string(),
+  },
+  handler: async (ctx, { secret, ...args }): Promise<Doc<"agentTasks"> | null> => {
+    assertServiceSecret(secret);
+    return ctx.runMutation(internal.agentTasks.completeWorkerRun, args);
+  },
+});
+
 export const recordAttemptFailure = action({
   args: {
     businessId: v.id("businesses"),

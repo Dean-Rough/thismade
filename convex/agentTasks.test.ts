@@ -678,3 +678,130 @@ describe("agentTasks: needs_review -> done requires owner/ceo approval (THI-62)"
     ).rejects.toThrow("task_circuit_broken");
   });
 });
+
+describe("agentTasks: worker-loop identity boundary (THI-68)", () => {
+  it("beginWorkerRun claims todo -> in_progress and always logs actor system, with no actor param to override it", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "worker-begin-a");
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: "worker-begin-a:task-1",
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+    });
+
+    const result = await t.mutation(internal.agentTasks.beginWorkerRun, {
+      businessId,
+      taskId: task!._id,
+    });
+    expect(result?.status).toBe("in_progress");
+
+    const events = await t.query(internal.agentEvents.listByTask, { businessId, taskId: task!._id });
+    const statusChange = events.find(
+      (e) => e.event.kind === "status_change" && e.event.toStatus === "in_progress",
+    );
+    expect(statusChange?.actor).toBe("system");
+  });
+
+  it("beginWorkerRun is a no-op-safe guard: a second concurrent claim on the same task rejects instead of double-running it", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "worker-begin-b");
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: "worker-begin-b:task-1",
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+    });
+
+    await t.mutation(internal.agentTasks.beginWorkerRun, { businessId, taskId: task!._id });
+
+    await expect(
+      t.mutation(internal.agentTasks.beginWorkerRun, { businessId, taskId: task!._id }),
+    ).rejects.toThrow("invalid_transition");
+  });
+
+  it("completeWorkerRun advances in_progress -> needs_review and always logs actor worker", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "worker-complete-a");
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: "worker-complete-a:task-1",
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+    });
+    await t.mutation(internal.agentTasks.beginWorkerRun, { businessId, taskId: task!._id });
+
+    const result = await t.mutation(internal.agentTasks.completeWorkerRun, {
+      businessId,
+      taskId: task!._id,
+    });
+    expect(result?.status).toBe("needs_review");
+
+    const events = await t.query(internal.agentEvents.listByTask, { businessId, taskId: task!._id });
+    const statusChange = events.find(
+      (e) => e.event.kind === "status_change" && e.event.toStatus === "needs_review",
+    );
+    expect(statusChange?.actor).toBe("worker");
+  });
+
+  it("completeWorkerRun cannot be used to reach done — there is no worker-loop path past needs_review", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "worker-complete-b");
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: "worker-complete-b:task-1",
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+    });
+    await t.mutation(internal.agentTasks.beginWorkerRun, { businessId, taskId: task!._id });
+    await t.mutation(internal.agentTasks.completeWorkerRun, { businessId, taskId: task!._id });
+
+    // completeWorkerRun only ever attempts in_progress -> needs_review; a
+    // second call against a task already at needs_review is rejected by the
+    // same transition table advanceStatus uses, not a special case.
+    await expect(
+      t.mutation(internal.agentTasks.completeWorkerRun, { businessId, taskId: task!._id }),
+    ).rejects.toThrow("invalid_transition");
+  });
+
+  it("beginWorkerRun/completeWorkerRun respect the circuit breaker like advanceStatus does", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "worker-circuit-a");
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Flaky task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: "worker-circuit-a:task-1",
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+      maxAttempts: 1,
+    });
+    await t.mutation(internal.agentTasks.recordAttemptFailure, {
+      businessId,
+      taskId: task!._id,
+      errorMessage: "boom",
+    });
+
+    await expect(
+      t.mutation(internal.agentTasks.beginWorkerRun, { businessId, taskId: task!._id }),
+    ).rejects.toThrow("task_circuit_broken");
+  });
+});
