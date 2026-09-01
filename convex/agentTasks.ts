@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { getScoped } from "./lib/tenancy";
 import { logEvent } from "./lib/events";
 import { spendCredits } from "./creditLedger";
@@ -211,6 +212,63 @@ export const listByStatus = internalQuery({
 // "ceo" may make that specific transition — a worker (or anything acting on
 // its behalf, including a worker redirected by injected instructions)
 // cannot unilaterally mark its own task done.
+//
+// Identity boundary (THI-68): a caller-supplied `actor` literal, on its own,
+// only proves the caller is *honest* about who it is — it proves nothing.
+// This mutation stays as the general-purpose entry point (used today by
+// direct/test callers and, eventually, a real authenticated owner/CEO
+// approval surface once one exists), but the sandboxed worker-execution loop
+// this ticket adds must never be able to reach it with `actor: "owner"` or
+// `"ceo"` merely because it decided to say so. `beginWorkerRun` and
+// `completeWorkerRun` below are the loop's only two entry points, and
+// neither accepts `actor` as a parameter at all — the actor is fixed by
+// which function the caller's role lets it call, not by what it claims.
+async function transitionTask(
+  ctx: MutationCtx,
+  args: {
+    businessId: Doc<"agentTasks">["businessId"];
+    taskId: Doc<"agentTasks">["_id"];
+    toStatus: "todo" | "in_progress" | "needs_review" | "done";
+    actor: "owner" | "ceo" | "worker" | "system";
+  },
+): Promise<Doc<"agentTasks"> | null> {
+  const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
+  if (!task) {
+    return null;
+  }
+  if (task.circuitBroken) {
+    throw new Error("task_circuit_broken");
+  }
+  const allowed = ALLOWED_TRANSITIONS[task.status] ?? [];
+  if (!allowed.includes(args.toStatus)) {
+    throw new Error(`invalid_transition:${task.status}->${args.toStatus}`);
+  }
+  if (
+    task.status === "needs_review" &&
+    args.toStatus === "done" &&
+    args.actor !== "owner" &&
+    args.actor !== "ceo"
+  ) {
+    throw new Error("done_requires_owner_or_ceo_approval");
+  }
+
+  const now = Date.now();
+  await ctx.db.patch(args.taskId, { status: args.toStatus, updatedAt: now });
+  await logEvent(ctx, {
+    businessId: args.businessId,
+    taskId: args.taskId,
+    actor: args.actor,
+    event: {
+      kind: "status_change",
+      taskId: args.taskId,
+      fromStatus: task.status,
+      toStatus: args.toStatus,
+    },
+    createdAt: now,
+  });
+  return ctx.db.get(args.taskId);
+}
+
 export const advanceStatus = internalMutation({
   args: {
     businessId: v.id("businesses"),
@@ -218,43 +276,37 @@ export const advanceStatus = internalMutation({
     toStatus: STATUS,
     actor: ACTOR,
   },
-  handler: async (ctx, args) => {
-    const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
-    if (!task) {
-      return null;
-    }
-    if (task.circuitBroken) {
-      throw new Error("task_circuit_broken");
-    }
-    const allowed = ALLOWED_TRANSITIONS[task.status] ?? [];
-    if (!allowed.includes(args.toStatus)) {
-      throw new Error(`invalid_transition:${task.status}->${args.toStatus}`);
-    }
-    if (
-      task.status === "needs_review" &&
-      args.toStatus === "done" &&
-      args.actor !== "owner" &&
-      args.actor !== "ceo"
-    ) {
-      throw new Error("done_requires_owner_or_ceo_approval");
-    }
+  handler: async (ctx, args) => transitionTask(ctx, args),
+});
 
-    const now = Date.now();
-    await ctx.db.patch(args.taskId, { status: args.toStatus, updatedAt: now });
-    await logEvent(ctx, {
-      businessId: args.businessId,
-      taskId: args.taskId,
-      actor: args.actor,
-      event: {
-        kind: "status_change",
-        taskId: args.taskId,
-        fromStatus: task.status,
-        toStatus: args.toStatus,
-      },
-      createdAt: now,
-    });
-    return ctx.db.get(args.taskId);
+// The worker-execution loop's only way to claim a dispatched task and start
+// running it. No `actor` param — always logged as "system" (the dispatcher's
+// own trusted orchestration, not a worker or a human). Restricted to
+// todo -> in_progress: a second concurrent claim attempt (e.g. a duplicate
+// scheduler retry) hits `invalid_transition` here rather than double-running
+// a worker, since Convex mutations are serializable — see convex/dispatcher.ts.
+export const beginWorkerRun = internalMutation({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
   },
+  handler: async (ctx, args) =>
+    transitionTask(ctx, { ...args, toStatus: "in_progress", actor: "system" }),
+});
+
+// The worker-execution loop's only way to hand a finished run back for
+// review. No `actor` param — always logged as "worker". Restricted to
+// in_progress -> needs_review; the loop has no function that can reach
+// needs_review -> done (that stays behind the owner/ceo-gated advanceStatus
+// above), so injected instructions mid-run cannot talk the loop into
+// approving its own work.
+export const completeWorkerRun = internalMutation({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+  },
+  handler: async (ctx, args) =>
+    transitionTask(ctx, { ...args, toStatus: "needs_review", actor: "worker" }),
 });
 
 // Records a failed worker attempt (design lens: circuit-break runaway

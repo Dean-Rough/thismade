@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { getScoped } from "./lib/tenancy";
 import { logEvent } from "./lib/events";
+import { toolCallEvent, toolResultEvent, fileDiffEvent, errorEvent } from "./lib/richContent";
 import type { Doc } from "./_generated/dataModel";
 
 // Blast-radius cap (THI-62): an owner's chat text is exactly the kind of
@@ -35,6 +36,37 @@ export const sendChatMessage = internalMutation({
       actor: args.authorRole,
       event: { kind: "chat_message", authorRole: args.authorRole, text: args.text },
       createdAt: now,
+    });
+  },
+});
+
+// The sandboxed worker-execution loop's (THI-68) one way to append to a
+// task's timeline. Deliberately narrower than logEvent's full richContent
+// union: `actor` can only be "worker" or "system" (never "owner"/"ceo" — same
+// identity-boundary reasoning as agentTasks.beginWorkerRun/completeWorkerRun,
+// a loop running attacker-influenced instructions must not be able to log
+// itself as the human), and `event` can only be one of the four execution-
+// trace kinds a worker run actually produces (tool_call/tool_result/
+// file_diff/error) — chat_message/dispatch/status_change/credit_debit stay
+// reachable only through their own dedicated, already-reviewed mutations.
+export const logWorkerEvent = internalMutation({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+    actor: v.union(v.literal("worker"), v.literal("system")),
+    event: v.union(toolCallEvent, toolResultEvent, fileDiffEvent, errorEvent),
+  },
+  handler: async (ctx, args) => {
+    const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
+    if (!task) {
+      throw new Error("task_not_found");
+    }
+    await logEvent(ctx, {
+      businessId: args.businessId,
+      taskId: args.taskId,
+      actor: args.actor,
+      event: args.event,
+      createdAt: Date.now(),
     });
   },
 });
