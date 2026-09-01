@@ -3,8 +3,14 @@
 import { revalidatePath } from "next/cache";
 import type { Id } from "@/convex/_generated/dataModel";
 import { resolveDashboardBusinessId } from "@/lib/api/dashboardBusiness";
+import { addDomain, verifyDomain, type Domain, type DnsRecord } from "@/lib/api/dashboardDomains";
 import { markTaskDone, resolveToolApproval, sendChatMessage } from "@/lib/api/dashboardTimeline";
 import { assertDashboardAccess } from "@/lib/assertDashboardAccess";
+
+// RFC 1123 hostname shape — same validation client- and server-side per the
+// THI-18 spec's add-domain flow. Deliberately simple: this only guards
+// against garbage input reaching addDomain, not full DNS-label edge cases.
+const HOSTNAME_PATTERN = /^(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/i;
 
 // Every action here resolves its own businessId server-side and revalidates
 // every dashboard route that reads timeline/task data — cheap given this is
@@ -66,4 +72,29 @@ export async function markTaskDoneAction(taskId: Id<"agentTasks">): Promise<void
     throw new Error("task_not_found_or_invalid_transition");
   }
   revalidateDashboard();
+}
+
+// THI-18: addDomain/verifyDomain (lib/api/dashboardDomains.ts) currently
+// throw "domains_backend_not_yet_available" — see THI-92 for the Convex
+// `domains` table/actions these will call once built. The actions here are
+// otherwise complete (auth-gated, validated, revalidating) so THI-92 landing
+// only requires swapping those two functions' bodies, not this file.
+export async function addDomainAction(hostname: string): Promise<{ records: DnsRecord[] }> {
+  await assertDashboardAccess();
+  const trimmed = hostname.trim().toLowerCase();
+  if (!HOSTNAME_PATTERN.test(trimmed)) {
+    throw new Error("invalid_hostname");
+  }
+  const businessId = await resolveDashboardBusinessId();
+  const result = await addDomain(businessId, trimmed);
+  revalidatePath("/dashboard/domains");
+  return result;
+}
+
+export async function verifyDomainAction(domainId: string): Promise<Domain> {
+  await assertDashboardAccess();
+  const businessId = await resolveDashboardBusinessId();
+  const result = await verifyDomain(businessId, domainId);
+  revalidatePath("/dashboard/domains");
+  return result;
 }
