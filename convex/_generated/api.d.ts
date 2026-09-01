@@ -17,6 +17,7 @@ import type * as businesses from "../businesses.js";
 import type * as creditLedger from "../creditLedger.js";
 import type * as files from "../files.js";
 import type * as idempotencyKeys from "../idempotencyKeys.js";
+import type * as lib_agentContextTemplates from "../lib/agentContextTemplates.js";
 import type * as lib_apiKeyCrypto from "../lib/apiKeyCrypto.js";
 import type * as lib_events from "../lib/events.js";
 import type * as lib_richContent from "../lib/richContent.js";
@@ -24,6 +25,7 @@ import type * as lib_tenancy from "../lib/tenancy.js";
 import type * as orders from "../orders.js";
 import type * as payouts from "../payouts.js";
 import type * as products from "../products.js";
+import type * as seedAgentContext from "../seedAgentContext.js";
 
 import type {
   ApiFromModules,
@@ -41,6 +43,7 @@ declare const fullApi: ApiFromModules<{
   creditLedger: typeof creditLedger;
   files: typeof files;
   idempotencyKeys: typeof idempotencyKeys;
+  "lib/agentContextTemplates": typeof lib_agentContextTemplates;
   "lib/apiKeyCrypto": typeof lib_apiKeyCrypto;
   "lib/events": typeof lib_events;
   "lib/richContent": typeof lib_richContent;
@@ -48,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   orders: typeof orders;
   payouts: typeof payouts;
   products: typeof products;
+  seedAgentContext: typeof seedAgentContext;
 }>;
 
 /**
