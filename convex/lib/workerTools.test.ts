@@ -314,9 +314,18 @@ describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
   // call boundary so no single argument ever contained a complete tag.
   // Assert the shipped text joins arguments before sanitizing once, and no
   // longer contains the old per-argument-map pattern.
-  it("joins document.write/writeln arguments before sanitizing, instead of sanitizing each argument independently", () => {
-    expect(BROWSER_DRIVER_SCRIPT).toContain('stripSpeculativeLinkMarkup(methodArgs.map(String).join(""))');
+  // THI-87: also assert the join goes through
+  // stripSpeculativeLinkMarkupFromWriteStream (the cross-call-buffered
+  // variant), not the plain stripSpeculativeLinkMarkup used by the
+  // one-shot innerHTML/outerHTML/insertAdjacentHTML callers - joining
+  // within a call closes the within-call split (THI-81) but not the
+  // cross-call split (THI-87), which needs the buffered variant.
+  it("joins document.write/writeln arguments before sanitizing through the cross-call-buffered variant, instead of sanitizing each argument independently or per-call only", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain(
+      'stripSpeculativeLinkMarkupFromWriteStream(methodArgs.map(String).join(""))',
+    );
     expect(BROWSER_DRIVER_SCRIPT).not.toContain("methodArgs.map(stripSpeculativeLinkMarkup)");
+    expect(BROWSER_DRIVER_SCRIPT).not.toContain('stripSpeculativeLinkMarkup(methodArgs.map(String).join(""))');
   });
 
   // THI-80 Finding 2: the page-console diagnostic relay used to match on the
@@ -352,9 +361,9 @@ describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
 // worker's Node process would execute) and run it directly, so a future
 // escaping slip in this region fails here instead of only surfacing as a
 // live worker task silently letting speculative <link> tags through.
-function extractFunctionSource(script: string, name: string): string {
+function extractFunctionSource(script: string, name: string, fromIndex = 0): string {
   const marker = `function ${name}(`;
-  const start = script.indexOf(marker);
+  const start = script.indexOf(marker, fromIndex);
   if (start === -1) throw new Error(`${name} not found in BROWSER_DRIVER_SCRIPT`);
   const braceStart = script.indexOf("{", start);
   let depth = 0;
@@ -372,16 +381,67 @@ function extractFunctionSource(script: string, name: string): string {
   return script.slice(start, i);
 }
 
+// THI-87: stripSpeculativeLinkMarkupFromWriteStream's cross-call buffering
+// depends on two closure-scoped declarations (pendingWriteTail,
+// MAX_PENDING_WRITE_TAIL_LENGTH) that aren't function declarations, so
+// extractFunctionSource can't pull them out. Same "run the actual shipped
+// text" rationale as extractFunctionSource above - grab the exact statement
+// instead of hand-copying a stand-in that could silently drift from it.
+function extractStatement(script: string, prefix: string, fromIndex = 0): string {
+  const start = script.indexOf(prefix, fromIndex);
+  if (start === -1) throw new Error(`"${prefix}" not found in BROWSER_DRIVER_SCRIPT`);
+  const end = script.indexOf(";", start);
+  if (end === -1) throw new Error(`no terminating ";" found for "${prefix}" in BROWSER_DRIVER_SCRIPT`);
+  return script.slice(start, end + 1);
+}
+
 describe("BROWSER_DRIVER_SCRIPT addInitScript link guard, executed against the actual shipped text (THI-81)", () => {
   function loadAddInitScriptLinkGuard() {
-    const hasBlockedLinkRelSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "hasBlockedLinkRel");
-    const stripSpeculativeLinkMarkupSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "stripSpeculativeLinkMarkup");
+    // THI-86: BROWSER_DRIVER_SCRIPT now has two distinct scanLinkTag
+    // functions - a top-level one used by stripSpeculativeLinkTags, and this
+    // closure's own copy used by stripSpeculativeLinkMarkup. extractFunctionSource
+    // finds the first textual match, so every lookup here must be scoped to
+    // start at (or after) the addInitScript closure, or "scanLinkTag" would
+    // silently resolve to the top-level copy instead of this one.
+    const closureStart = BROWSER_DRIVER_SCRIPT.indexOf("await context.addInitScript(");
+    if (closureStart === -1) throw new Error("addInitScript closure not found in BROWSER_DRIVER_SCRIPT");
+    const hasBlockedLinkRelSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "hasBlockedLinkRel", closureStart);
+    const scanLinkTagSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "scanLinkTag", closureStart);
+    // THI-86 follow-up: stripSpeculativeLinkMarkup now also depends on a
+    // sibling decodeRelValue (same closure-scoping hazard as scanLinkTag -
+    // there are two same-named copies in BROWSER_DRIVER_SCRIPT).
+    const decodeRelValueSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "decodeRelValue", closureStart);
+    const stripSpeculativeLinkMarkupSrc = extractFunctionSource(
+      BROWSER_DRIVER_SCRIPT,
+      "stripSpeculativeLinkMarkup",
+      closureStart,
+    );
+    // THI-87: pendingWriteTail/MAX_PENDING_WRITE_TAIL_LENGTH are the
+    // cross-call buffer state stripSpeculativeLinkMarkupFromWriteStream
+    // closes over - must be declared once per factory() call (i.e. once per
+    // simulated document, matching the real addInitScript closure's
+    // per-navigation lifetime) so each test starts from a fresh buffer.
+    const pendingWriteTailDeclSrc = extractStatement(BROWSER_DRIVER_SCRIPT, "let pendingWriteTail", closureStart);
+    const maxPendingWriteTailLengthSrc = extractStatement(
+      BROWSER_DRIVER_SCRIPT,
+      "const MAX_PENDING_WRITE_TAIL_LENGTH",
+      closureStart,
+    );
+    const stripSpeculativeLinkMarkupFromWriteStreamSrc = extractFunctionSource(
+      BROWSER_DRIVER_SCRIPT,
+      "stripSpeculativeLinkMarkupFromWriteStream",
+      closureStart,
+    );
     // eslint-disable-next-line no-new-func -- deliberately executing the
     // exact text that ships to the sandbox, not a hand-copied stand-in.
     const factory = new Function(
-      `${hasBlockedLinkRelSrc}\n${stripSpeculativeLinkMarkupSrc}\nreturn { hasBlockedLinkRel, stripSpeculativeLinkMarkup };`,
+      `${hasBlockedLinkRelSrc}\n${scanLinkTagSrc}\n${decodeRelValueSrc}\n${stripSpeculativeLinkMarkupSrc}\n${pendingWriteTailDeclSrc}\n${maxPendingWriteTailLengthSrc}\n${stripSpeculativeLinkMarkupFromWriteStreamSrc}\nreturn { hasBlockedLinkRel, stripSpeculativeLinkMarkup, stripSpeculativeLinkMarkupFromWriteStream };`,
     );
-    return factory() as { hasBlockedLinkRel: (v: string) => boolean; stripSpeculativeLinkMarkup: (html: string) => string };
+    return factory() as {
+      hasBlockedLinkRel: (v: string) => boolean;
+      stripSpeculativeLinkMarkup: (html: string) => string;
+      stripSpeculativeLinkMarkupFromWriteStream: (chunk: string) => string;
+    };
   }
 
   it("actually strips a straightforward preconnect link (would have caught the backslash-escaping bug that made this a silent no-op)", () => {
@@ -432,13 +492,189 @@ describe("BROWSER_DRIVER_SCRIPT addInitScript link guard, executed against the a
     expect(stripSpeculativeLinkMarkup('<link rel=preconnect href=fo"o>')).not.toContain("preconnect");
     expect(stripSpeculativeLinkMarkup("<link rel=preconnect href=abc'def>")).not.toContain("preconnect");
   });
+
+  // THI-84: see the equivalent Node-side test above for the root cause. This
+  // closure runs in the page's own JS realm on attacker-influenced
+  // innerHTML/document.write input, so it carries the same DoS exposure.
+  it("does not exhibit catastrophic backtracking on a run of unquoted quote characters with no reachable '>'", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const html = "<html><head><link rel=preconnect href=" + '"'.repeat(60) + "x".repeat(200);
+    const start = Date.now();
+    stripSpeculativeLinkMarkup(html);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  // THI-86 PoC: the atomic-group regex (THI-84's fix) commits to one greedy
+  // reading of the repetition with no ability to backtrack into it, so this
+  // malformed-but-browser-parseable tag - whose greedy quoted-span reading
+  // swallows the only reachable '>' - failed to match at all, leaving a live
+  // rel=preconnect link completely unstripped. Verified against real
+  // Chromium (a local Playwright build navigated to this exact markup):
+  // Chromium parses it as `<link rel="preconnect" href="x&quot;AB">`, ending
+  // the tag at the first real '>' exactly like the pre-THI-84 (backtracking)
+  // regex did and the THI-84 atomic version did not.
+  it("strips a link tag whose greedy quoted-span reading has no reachable '>' to backtrack onto (THI-86)", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const html = '<link rel=preconnect href=x"AB>CD"noclosingbracket';
+    expect(stripSpeculativeLinkMarkup(html)).not.toContain("preconnect");
+  });
+
+  // THI-86: the n=60 timing test above only proves the OLD atomic-group
+  // regex doesn't blow up on ONE shape - it says nothing about this
+  // tokenizer, and the issue's own caveat showed a naive regex-only
+  // correctness patch (lookbehind-anchored quoted-span opening) reintroduced
+  // catastrophic backtracking on a different shape (many `="` pairs before a
+  // dead end). These run at 300-800x the size of the old test to prove the
+  // O(html.length) bound structurally rather than for one input shape at a
+  // small n - any backtracking regex would already have failed long before
+  // reaching these sizes.
+  it("stays linear at a scale where any backtracking regex would already have failed", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const shapes = [
+      "<html><head><link rel=preconnect href=" + '"'.repeat(50_000) + "x".repeat(200),
+      "<link href" + '="'.repeat(50_000),
+      "<link " + 'a="x" '.repeat(20_000) + 'b="' + "y".repeat(50_000),
+    ];
+    for (const html of shapes) {
+      const start = Date.now();
+      stripSpeculativeLinkMarkup(html);
+      expect(Date.now() - start).toBeLessThan(1000);
+    }
+  });
+
+  // THI-86 follow-up (C1): scanLinkTag finds attribute boundaries but never
+  // decoded HTML character references, so an entity-encoded rel value built
+  // a genuine rel=preconnect element in real Chromium while the raw
+  // (undecoded) slice never token-matched "preconnect"/"dns-prefetch" -
+  // confirmed live against a local Chromium build. decodeRelValue closes
+  // this by decoding numeric character references generally (they can spell
+  // any code point, including a bare ASCII letter) plus the two named
+  // references that decode to ASCII whitespace.
+  it("strips a link tag whose rel value hides the blocked token behind HTML character references", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const cases = [
+      '<link rel=&#112;reconnect href="//169.254.169.254/">',
+      '<link rel=&#x70;reconnect href="//169.254.169.254/">',
+      '<link rel="pre&#99;onnect" href="//169.254.169.254/">',
+      '<link rel="stylesheet&#32;preconnect" href="//169.254.169.254/">',
+      '<link rel="&NewLine;preconnect" href="//169.254.169.254/">',
+      '<link rel="&Tab;preconnect" href="//169.254.169.254/">',
+      '<link rel="dns&#45;prefetch" href="//169.254.169.254/">',
+    ];
+    for (const html of cases) {
+      expect(stripSpeculativeLinkMarkup(html)).not.toContain("169.254.169.254");
+    }
+  });
+
+  // Control for the same fix: a reference that does NOT decode to ASCII
+  // hyphen (U+2010 vs U+002D) must not be treated as if it did - decoding
+  // more than the specific references this check needs would risk
+  // over-stripping unrelated content.
+  it("does not treat a similar-looking but distinct character reference as the blocked token", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const html = '<link rel="dns&hyphen;prefetch" href="/app.css">';
+    expect(stripSpeculativeLinkMarkup(html)).toBe(html);
+  });
+
+  // Medium finding from the THI-86 review: the earlier "stays linear" tests
+  // above all hit scanLinkTag's end===-1 early exit, so they'd pass even if
+  // the steady-state per-tag path (the common case: many well-formed,
+  // properly-terminated tags) were quadratic. This is the missing witness.
+  it("stays linear across many well-formed, fully-terminated tags (steady-state path)", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const html = '<link rel="stylesheet" href="/app.css">'.repeat(50_000);
+    const start = Date.now();
+    const result = stripSpeculativeLinkMarkup(html);
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(result).toBe(html);
+  });
+
+  // THI-87 PoC (quoted-href variant), run against the exact shipped
+  // stripSpeculativeLinkMarkupFromWriteStream/document.write patch pairing:
+  // document.write/writeln append to one persistent parser input stream
+  // across calls, so a <link> tag left unterminated by one call (which
+  // stripSpeculativeLinkMarkup alone correctly treats as "never reachable
+  // '>', pass through unstripped" - safe for one-shot innerHTML-style
+  // callers, not for a stream) can be completed by the very next call and
+  // become a live element if nothing carries the fragment forward.
+  // Confirmed live against real Chromium before this fix (see the issue).
+  it("closes the document.write cross-call split (quoted href) confirmed live against real Chromium (THI-87)", () => {
+    const { stripSpeculativeLinkMarkupFromWriteStream } = loadAddInitScriptLinkGuard();
+    const first = stripSpeculativeLinkMarkupFromWriteStream('<link rel=preconnect href="//169.254.169.254/');
+    const second = stripSpeculativeLinkMarkupFromWriteStream('">');
+    expect(first).not.toContain("169.254.169.254");
+    expect(second).not.toContain("169.254.169.254");
+  });
+
+  // THI-87 PoC (no-quote variant) from the same issue.
+  it("closes the document.write cross-call split (no quote) confirmed live against real Chromium (THI-87)", () => {
+    const { stripSpeculativeLinkMarkupFromWriteStream } = loadAddInitScriptLinkGuard();
+    const first = stripSpeculativeLinkMarkupFromWriteStream("<link rel=preconnect href=//169.254.169.254/");
+    const second = stripSpeculativeLinkMarkupFromWriteStream(">");
+    expect(first).not.toContain("169.254.169.254");
+    expect(second).not.toContain("169.254.169.254");
+  });
+
+  it("still strips a blocked link tag fully contained within a single document.write call", () => {
+    const { stripSpeculativeLinkMarkupFromWriteStream } = loadAddInitScriptLinkGuard();
+    const out = stripSpeculativeLinkMarkupFromWriteStream(
+      '<link rel="preconnect" href="http://169.254.169.254/">plain text after',
+    );
+    expect(out).not.toContain("169.254.169.254");
+    expect(out).toContain("plain text after");
+  });
+
+  it("reassembles a benign tag split across document.write calls unmodified", () => {
+    const { stripSpeculativeLinkMarkupFromWriteStream } = loadAddInitScriptLinkGuard();
+    const first = stripSpeculativeLinkMarkupFromWriteStream('<link rel="stylesheet" href="/app.c');
+    const second = stripSpeculativeLinkMarkupFromWriteStream('ss">');
+    expect(first + second).toBe('<link rel="stylesheet" href="/app.css">');
+  });
+
+  // THI-87's explicit requirement: bound how long a page can keep a
+  // fragment pending, so an endless stream of write() calls that never
+  // complete a tag can't grow the buffer without limit. Once the pending
+  // fragment exceeds MAX_PENDING_WRITE_TAIL_LENGTH, it must be treated as
+  // blocked (never emitted unstripped) and the buffer must reset rather
+  // than keep accumulating.
+  it("caps unbounded buffer growth for a tag that never completes, instead of buffering forever", () => {
+    const { stripSpeculativeLinkMarkupFromWriteStream } = loadAddInitScriptLinkGuard();
+    const first = stripSpeculativeLinkMarkupFromWriteStream("<link rel=preconnect href=" + "x".repeat(20_000));
+    expect(first).toContain("<!-- thismade: stripped speculative link -->");
+    expect(first.length).toBeLessThan(1_000);
+    const second = stripSpeculativeLinkMarkupFromWriteStream("plain text after the cap");
+    expect(second).toBe("plain text after the cap");
+  });
 });
 
 describe("BROWSER_DRIVER_SCRIPT allowRequest body-rewrite mirror, executed against the actual shipped text (THI-81)", () => {
   function loadBodyRewriteMirror() {
+    // THI-86: stripSpeculativeLinkTags now delegates to sibling top-level
+    // scanLinkTag/decodeRelValue/isBlockedRelValue functions - found first
+    // (fromIndex defaults to 0) only because they appear before the
+    // addInitScript closure's own same-named copies of scanLinkTag/
+    // decodeRelValue. Assert that ordering explicitly rather than relying on
+    // it silently - if BROWSER_DRIVER_SCRIPT is ever reordered so the
+    // closure's copies come first, this extraction would silently bind to
+    // the wrong (closure-scoped) functions instead of failing loudly.
+    const closureStart = BROWSER_DRIVER_SCRIPT.indexOf("await context.addInitScript(");
+    if (closureStart === -1) throw new Error("addInitScript closure not found in BROWSER_DRIVER_SCRIPT");
+    const scanLinkTagStart = BROWSER_DRIVER_SCRIPT.indexOf("function scanLinkTag(");
+    const decodeRelValueStart = BROWSER_DRIVER_SCRIPT.indexOf("function decodeRelValue(");
+    if (scanLinkTagStart === -1 || scanLinkTagStart >= closureStart) {
+      throw new Error("expected a top-level scanLinkTag before the addInitScript closure");
+    }
+    if (decodeRelValueStart === -1 || decodeRelValueStart >= closureStart) {
+      throw new Error("expected a top-level decodeRelValue before the addInitScript closure");
+    }
+    const scanLinkTagSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "scanLinkTag");
+    const decodeRelValueSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "decodeRelValue");
+    const isBlockedRelValueSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "isBlockedRelValue");
     const src = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "stripSpeculativeLinkTags");
     // eslint-disable-next-line no-new-func -- see loadAddInitScriptLinkGuard above.
-    const factory = new Function(`${src}\nreturn stripSpeculativeLinkTags;`);
+    const factory = new Function(
+      `${scanLinkTagSrc}\n${decodeRelValueSrc}\n${isBlockedRelValueSrc}\n${src}\nreturn stripSpeculativeLinkTags;`,
+    );
     return factory() as (html: string) => string;
   }
 
@@ -459,6 +695,78 @@ describe("BROWSER_DRIVER_SCRIPT allowRequest body-rewrite mirror, executed again
     const strip = loadBodyRewriteMirror();
     expect(strip('<link rel=preconnect href=fo"o>')).not.toContain("preconnect");
     expect(strip("<link rel=preconnect href=abc'def>")).not.toContain("preconnect");
+  });
+
+  // THI-84: this is the live production path (route.fulfill's body rewrite,
+  // running on the literal HTTP response body of any page navigate()
+  // visits) - see the equivalent Node-side test above for the root cause.
+  it("does not exhibit catastrophic backtracking on a run of unquoted quote characters with no reachable '>'", () => {
+    const strip = loadBodyRewriteMirror();
+    const html = "<html><head><link rel=preconnect href=" + '"'.repeat(60) + "x".repeat(200);
+    const start = Date.now();
+    strip(html);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  // THI-86 PoC: this is the live production path (allowRequest's body
+  // rewrite, running on the literal HTTP response body of any page
+  // navigate() visits) - see the equivalent Node-side test above for the
+  // full root cause and the real-Chromium verification of the expected
+  // parse boundary.
+  it("strips a link tag whose greedy quoted-span reading has no reachable '>' to backtrack onto (THI-86)", () => {
+    const strip = loadBodyRewriteMirror();
+    const html = '<link rel=preconnect href=x"AB>CD"noclosingbracket';
+    expect(strip(html)).not.toContain("preconnect");
+  });
+
+  // THI-86: see the equivalent addInitScript-mirror test above for why the
+  // old n=60 timing test alone isn't sufficient coverage for this tokenizer.
+  it("stays linear at a scale where any backtracking regex would already have failed", () => {
+    const strip = loadBodyRewriteMirror();
+    const shapes = [
+      "<html><head><link rel=preconnect href=" + '"'.repeat(50_000) + "x".repeat(200),
+      "<link href" + '="'.repeat(50_000),
+      "<link " + 'a="x" '.repeat(20_000) + 'b="' + "y".repeat(50_000),
+    ];
+    for (const html of shapes) {
+      const start = Date.now();
+      strip(html);
+      expect(Date.now() - start).toBeLessThan(1000);
+    }
+  });
+
+  // THI-86 follow-up (C1): see the equivalent addInitScript-mirror test
+  // above for the full explanation. This is the live production path
+  // (allowRequest's body rewrite).
+  it("strips a link tag whose rel value hides the blocked token behind HTML character references", () => {
+    const strip = loadBodyRewriteMirror();
+    const cases = [
+      '<link rel=&#112;reconnect href="//169.254.169.254/">',
+      '<link rel=&#x70;reconnect href="//169.254.169.254/">',
+      '<link rel="pre&#99;onnect" href="//169.254.169.254/">',
+      '<link rel="stylesheet&#32;preconnect" href="//169.254.169.254/">',
+      '<link rel="&NewLine;preconnect" href="//169.254.169.254/">',
+      '<link rel="&Tab;preconnect" href="//169.254.169.254/">',
+      '<link rel="dns&#45;prefetch" href="//169.254.169.254/">',
+    ];
+    for (const html of cases) {
+      expect(strip(html)).not.toContain("169.254.169.254");
+    }
+  });
+
+  it("does not treat a similar-looking but distinct character reference as the blocked token", () => {
+    const strip = loadBodyRewriteMirror();
+    const html = '<link rel="dns&hyphen;prefetch" href="/app.css">';
+    expect(strip(html)).toBe(html);
+  });
+
+  it("stays linear across many well-formed, fully-terminated tags (steady-state path)", () => {
+    const strip = loadBodyRewriteMirror();
+    const html = '<link rel="stylesheet" href="/app.css">'.repeat(50_000);
+    const start = Date.now();
+    const result = strip(html);
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(result).toBe(html);
   });
 });
 
@@ -597,5 +905,187 @@ describe("stripSpeculativeLinkTags (THI-75)", () => {
   it("strips a link tag even when an unquoted attribute value contains an unmatched literal quote character", () => {
     expect(stripSpeculativeLinkTags('<link rel=preconnect href=fo"o>')).not.toContain("preconnect");
     expect(stripSpeculativeLinkTags("<link rel=preconnect href=abc'def>")).not.toContain("preconnect");
+  });
+
+  // THI-84: the THI-82 widening (`[^'">]` -> `[^>]`) reintroduced ambiguity
+  // between the quoted-span branch and the catch-all - when no `>` is
+  // reachable later in the string, the engine used to backtrack through
+  // every quote-treatment combination before failing (confirmed exponential:
+  // ~1.6x per additional quote character, unusable past ~30). The
+  // lookahead+backreference atomic-group emulation keeps this flat.
+  it("does not exhibit catastrophic backtracking on a run of unquoted quote characters with no reachable '>'", () => {
+    const html = "<html><head><link rel=preconnect href=" + '"'.repeat(60) + "x".repeat(200);
+    const start = Date.now();
+    stripSpeculativeLinkTags(html);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  // THI-86 PoC: the THI-84 atomic-group emulation (`(?=(...))\1`) commits to
+  // one greedy reading of the repetition with no ability to backtrack into
+  // it from outside. THI-82's fix depended on exactly that backtracking:
+  // when the greedy quoted-span reading swallows the only reachable '>' and
+  // is a dead end, the engine used to retry treating the stray quote as a
+  // literal character instead. The atomic version can't retry, so this tag
+  // failed to match at all and its live rel=preconnect passed through
+  // completely unstripped - a full bypass, not a truncation. Independently
+  // verified against real Chromium (a local Playwright build navigated to
+  // this exact markup): the browser parses it as
+  // `<link rel="preconnect" href="x&quot;AB">`, ending the tag at the first
+  // real '>' - exactly the boundary this tokenizer now finds.
+  it("strips a link tag whose greedy quoted-span reading has no reachable '>' to backtrack onto (THI-86)", () => {
+    const html = '<link rel=preconnect href=x"AB>CD"noclosingbracket';
+    const stripped = stripSpeculativeLinkTags(html);
+    expect(stripped).not.toContain("preconnect");
+    expect(stripped).not.toContain("<link");
+    // The tail after the real closing '>' (per the WHATWG unquoted-value
+    // state, that stray '"' is a literal character, not a span-opener) must
+    // survive untouched - proves the tokenizer found the same boundary
+    // Chromium does, not merely "some" boundary that happens to strip rel=.
+    expect(stripped).toContain('CD"noclosingbracket');
+  });
+
+  // THI-86: the n=60 timing test above only proves the OLD atomic-group
+  // regex doesn't blow up on ONE shape - it says nothing about this
+  // tokenizer, and the issue's own caveat showed a naive regex-only
+  // correctness patch (lookbehind-anchored quoted-span opening) reintroduced
+  // catastrophic backtracking on a different shape (many `="` pairs before a
+  // dead end). These run at 300-800x the size of the old test to prove the
+  // O(html.length) bound structurally - every branch in scanLinkTag advances
+  // the scan position by at least one character, so there is no ambiguous
+  // interpretation left to backtrack through regardless of input shape.
+  it("stays linear at a scale where any backtracking regex would already have failed", () => {
+    const shapes = [
+      // Same shape as the THI-84 regression test above, at ~800x the size.
+      "<html><head><link rel=preconnect href=" + '"'.repeat(50_000) + "x".repeat(200),
+      // The shape the issue's rejected lookbehind-anchored interim fix
+      // choked on: many `="` pairs before a dead end with no reachable '>'.
+      "<link href" + '="'.repeat(50_000),
+      // Many well-formed quoted attributes, then one unterminated tail.
+      "<link " + 'a="x" '.repeat(20_000) + 'b="' + "y".repeat(50_000),
+    ];
+    for (const html of shapes) {
+      const start = Date.now();
+      stripSpeculativeLinkTags(html);
+      expect(Date.now() - start).toBeLessThan(1000);
+    }
+  });
+
+  // THI-86 follow-up: an independent deep review of the THI-86 tokenizer
+  // fix found that scanLinkTag identifies attribute boundaries but never
+  // decodes HTML character references, which the WHATWG tokenizer *does*
+  // resolve inside every attribute-value state before the value reaches
+  // userland. Confirmed live against a local Chromium build: each of these
+  // builds a genuine rel="preconnect"/"dns-prefetch" element while the raw
+  // (undecoded) slice never token-matched either blocked value. decodeRelValue
+  // closes this - see its module comment for exactly what it decodes and why.
+  it("strips a link tag whose rel value hides the blocked token behind HTML character references", () => {
+    const cases = [
+      // Decimal and hex numeric references can spell any code point,
+      // including a bare ASCII letter anywhere in the token.
+      '<link rel=&#112;reconnect href="//169.254.169.254/">',
+      '<link rel=&#x70;reconnect href="//169.254.169.254/">',
+      '<link rel="pre&#99;onnect" href="//169.254.169.254/">',
+      // A decoded separator hiding the real token behind a fake boundary.
+      '<link rel="stylesheet&#32;preconnect" href="//169.254.169.254/">',
+      '<link rel="&NewLine;preconnect" href="//169.254.169.254/">',
+      '<link rel="&Tab;preconnect" href="//169.254.169.254/">',
+      // The dns-prefetch variant, hyphen hidden via numeric reference.
+      '<link rel="dns&#45;prefetch" href="//169.254.169.254/">',
+    ];
+    for (const html of cases) {
+      expect(stripSpeculativeLinkTags(html)).not.toContain("169.254.169.254");
+    }
+  });
+
+  // Control for the same fix: a reference that does NOT decode to ASCII
+  // hyphen (U+2010 vs U+002D, confirmed against real Chromium during
+  // review) must not be treated as if it did - over-decoding beyond what
+  // this specific check needs would risk stripping unrelated content.
+  it("does not treat a similar-looking but distinct character reference as the blocked token", () => {
+    const html = '<link rel="dns&hyphen;prefetch" href="/app.css">';
+    expect(stripSpeculativeLinkTags(html)).toBe(html);
+  });
+
+  // Medium finding from the THI-86 review: the "stays linear" test above
+  // (and its counterparts on both driver-script mirrors) all hit
+  // scanLinkTag's end===-1 early exit, so they'd pass even if the
+  // steady-state per-tag path (the common case: many well-formed, properly
+  // terminated tags) were quadratic instead of linear. This is the missing
+  // witness - it also exercises the THI-86 outer-loop rewrite's lastIndex
+  // bookkeeping across many consecutive matches, not just one.
+  it("stays linear across many well-formed, fully-terminated tags (steady-state path)", () => {
+    const html = '<link rel="stylesheet" href="/app.css">'.repeat(50_000);
+    const start = Date.now();
+    const result = stripSpeculativeLinkTags(html);
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(result).toBe(html);
+  });
+});
+
+// THI-86 review finding: the three implementations above (this module's own
+// stripSpeculativeLinkTags, and its two hand-copied JS-text mirrors inside
+// BROWSER_DRIVER_SCRIPT) are exercised by near-identical but separately
+// written test blocks - nothing asserts they actually agree with each
+// other. A behavioral change made to only two of the three copies (an easy
+// mistake with hand-copied mirrors - see the THI-81 backslash-escaping
+// incident referenced throughout this file) would pass every test above
+// while silently diverging in production. This runs one shared adversarial
+// corpus through all three and asserts byte-identical output.
+describe("stripSpeculativeLinkTags mirrors stay in sync across all three copies (THI-86)", () => {
+  function loadBodyRewriteMirrorFn(): (html: string) => string {
+    const scanLinkTagSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "scanLinkTag");
+    const decodeRelValueSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "decodeRelValue");
+    const isBlockedRelValueSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "isBlockedRelValue");
+    const src = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "stripSpeculativeLinkTags");
+    // eslint-disable-next-line no-new-func -- deliberately executing the
+    // exact text that ships to the sandbox, not a hand-copied stand-in.
+    const factory = new Function(
+      `${scanLinkTagSrc}\n${decodeRelValueSrc}\n${isBlockedRelValueSrc}\n${src}\nreturn stripSpeculativeLinkTags;`,
+    );
+    return factory() as (html: string) => string;
+  }
+
+  function loadAddInitScriptMarkupFn(): (html: string) => string {
+    const closureStart = BROWSER_DRIVER_SCRIPT.indexOf("await context.addInitScript(");
+    if (closureStart === -1) throw new Error("addInitScript closure not found in BROWSER_DRIVER_SCRIPT");
+    const hasBlockedLinkRelSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "hasBlockedLinkRel", closureStart);
+    const scanLinkTagSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "scanLinkTag", closureStart);
+    const decodeRelValueSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "decodeRelValue", closureStart);
+    const stripSpeculativeLinkMarkupSrc = extractFunctionSource(
+      BROWSER_DRIVER_SCRIPT,
+      "stripSpeculativeLinkMarkup",
+      closureStart,
+    );
+    // eslint-disable-next-line no-new-func -- see above.
+    const factory = new Function(
+      `${hasBlockedLinkRelSrc}\n${scanLinkTagSrc}\n${decodeRelValueSrc}\n${stripSpeculativeLinkMarkupSrc}\nreturn stripSpeculativeLinkMarkup;`,
+    );
+    return factory() as (html: string) => string;
+  }
+
+  it("produces byte-identical output across the Node export and both driver-script mirrors", () => {
+    const bodyRewrite = loadBodyRewriteMirrorFn();
+    const addInitScript = loadAddInitScriptMarkupFn();
+    const corpus = [
+      '<link rel="preconnect" href="https://evil.example">',
+      "<link rel='dns-prefetch' href='//evil.example'>",
+      '<link rel="stylesheet" href="/app.css">',
+      '<link data-x="foo>bar" rel="preconnect" href="https://evil.example">',
+      '<link data-note="rel=bogus" rel="preconnect" href="https://evil.example">',
+      '<link rel=preconnect href=fo"o>',
+      "<link rel=preconnect href=abc'def>",
+      '<link rel=preconnect href=x"AB>CD"noclosingbracket',
+      '<link rel=&#112;reconnect href="//169.254.169.254/">',
+      '<link rel="stylesheet&#32;preconnect" href="//169.254.169.254/">',
+      '<link rel="dns&hyphen;prefetch" href="/app.css">',
+      '<html><head><link rel="preconnect" href="https://evil.example"><title>ok</title></head><body>hi</body></html>',
+      "no link tags here at all",
+      '<link rel="stylesheet" href="/app.css">'.repeat(50),
+    ];
+    for (const html of corpus) {
+      const nodeResult = stripSpeculativeLinkTags(html);
+      expect(bodyRewrite(html)).toBe(nodeResult);
+      expect(addInitScript(html)).toBe(nodeResult);
+    }
   });
 });
