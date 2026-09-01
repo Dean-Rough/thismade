@@ -1,11 +1,25 @@
-import { Bell } from "lucide-react";
+import { Bell, Menu } from "lucide-react";
 
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 
-export function TopBar() {
+interface TopBarProps {
+  onOpenNav?: () => void;
+}
+
+export function TopBar({ onOpenNav }: TopBarProps) {
   return (
     <header className="flex h-top-bar shrink-0 items-center justify-between border-b border-border bg-surface-raised px-4">
-      <span className="text-sm font-medium">Your business</span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          aria-label="Open menu"
+          onClick={onOpenNav}
+          className="-ml-2 inline-flex size-9 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface hover:text-ink md:hidden"
+        >
+          <Menu className="size-4" />
+        </button>
+        <span className="text-sm font-medium">Your business</span>
+      </div>
 
       <div className="flex items-center gap-1">
         <ThemeToggle />
