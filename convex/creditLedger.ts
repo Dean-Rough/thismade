@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import { logEvent } from "./lib/events";
 import type { GenericMutationCtx } from "convex/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -24,7 +24,9 @@ async function getOrCreateBalanceRow(
   return (await ctx.db.get(id)) as Doc<"creditBalances">;
 }
 
-export const getBalance = query({
+// Internal-only (THI-56): every function here is fronted by the matching
+// action in creditLedgerActions.ts, same pattern as THI-42.
+export const getBalance = internalQuery({
   args: { businessId: v.id("businesses") },
   handler: async (ctx, args) => {
     const row = await ctx.db
@@ -37,7 +39,7 @@ export const getBalance = query({
 
 // Adds credits (plan grant, refund, manual top-up). Grants aren't the write
 // this ledger protects against — spends are — so this isn't gated.
-export const grant = mutation({
+export const grant = internalMutation({
   args: {
     businessId: v.id("businesses"),
     amount: v.number(),
@@ -150,7 +152,7 @@ export async function spendCredits(
   return { balanceAfter, replayed: false, transactionId, eventId };
 }
 
-export const spend = mutation({
+export const spend = internalMutation({
   args: {
     businessId: v.id("businesses"),
     amount: v.number(),

@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -18,18 +18,18 @@ describe("agentEvents: chat", () => {
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "chat-a");
 
-    await t.mutation(api.agentEvents.sendChatMessage, {
+    await t.mutation(internal.agentEvents.sendChatMessage, {
       businessId,
       authorRole: "owner",
       text: "Ship the storefront checkout flow first.",
     });
-    await t.mutation(api.agentEvents.sendChatMessage, {
+    await t.mutation(internal.agentEvents.sendChatMessage, {
       businessId,
       authorRole: "ceo",
       text: "On it — dispatching the coding worker now.",
     });
 
-    const events = await t.query(api.agentEvents.listByBusiness, { businessId });
+    const events = await t.query(internal.agentEvents.listByBusiness, { businessId });
     expect(events).toHaveLength(2);
     expect(events[0].event.kind).toBe("chat_message");
     expect(events[0].actor).toBe("owner");
@@ -41,13 +41,13 @@ describe("agentEvents: chat", () => {
     const businessAId = await makeBusiness(t, "chat-tenancy-a");
     const businessBId = await makeBusiness(t, "chat-tenancy-b");
 
-    await t.mutation(api.agentEvents.sendChatMessage, {
+    await t.mutation(internal.agentEvents.sendChatMessage, {
       businessId: businessAId,
       authorRole: "owner",
       text: "A's message",
     });
 
-    expect(await t.query(api.agentEvents.listByBusiness, { businessId: businessAId })).toHaveLength(1);
-    expect(await t.query(api.agentEvents.listByBusiness, { businessId: businessBId })).toHaveLength(0);
+    expect(await t.query(internal.agentEvents.listByBusiness, { businessId: businessAId })).toHaveLength(1);
+    expect(await t.query(internal.agentEvents.listByBusiness, { businessId: businessBId })).toHaveLength(0);
   });
 });

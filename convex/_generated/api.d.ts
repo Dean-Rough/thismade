@@ -9,14 +9,19 @@
  */
 
 import type * as agentContextFiles from "../agentContextFiles.js";
+import type * as agentContextFilesActions from "../agentContextFilesActions.js";
 import type * as agentEvents from "../agentEvents.js";
+import type * as agentEventsActions from "../agentEventsActions.js";
 import type * as agentSkills from "../agentSkills.js";
+import type * as agentSkillsActions from "../agentSkillsActions.js";
 import type * as agentTasks from "../agentTasks.js";
+import type * as agentTasksActions from "../agentTasksActions.js";
 import type * as apiKeys from "../apiKeys.js";
 import type * as apiKeysActions from "../apiKeysActions.js";
 import type * as businesses from "../businesses.js";
 import type * as businessesActions from "../businessesActions.js";
 import type * as creditLedger from "../creditLedger.js";
+import type * as creditLedgerActions from "../creditLedgerActions.js";
 import type * as files from "../files.js";
 import type * as filesActions from "../filesActions.js";
 import type * as idempotencyKeys from "../idempotencyKeys.js";
@@ -43,14 +48,19 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   agentContextFiles: typeof agentContextFiles;
+  agentContextFilesActions: typeof agentContextFilesActions;
   agentEvents: typeof agentEvents;
+  agentEventsActions: typeof agentEventsActions;
   agentSkills: typeof agentSkills;
+  agentSkillsActions: typeof agentSkillsActions;
   agentTasks: typeof agentTasks;
+  agentTasksActions: typeof agentTasksActions;
   apiKeys: typeof apiKeys;
   apiKeysActions: typeof apiKeysActions;
   businesses: typeof businesses;
   businessesActions: typeof businessesActions;
   creditLedger: typeof creditLedger;
+  creditLedgerActions: typeof creditLedgerActions;
   files: typeof files;
   filesActions: typeof filesActions;
   idempotencyKeys: typeof idempotencyKeys;

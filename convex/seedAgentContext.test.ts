@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 import { CONTEXT_FILE_KEYS } from "./lib/agentContextTemplates";
 
@@ -19,14 +19,14 @@ describe("seedAgentContext.seedDefaults", () => {
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "seed-a");
 
-    const result = await t.action(api.seedAgentContext.seedDefaults, {
+    const result = await t.action(internal.seedAgentContext.seedDefaults, {
       businessId,
       provisionedAtIso: "2026-09-01",
     });
     expect(result.fileKeys).toHaveLength(8);
     expect(result.skillKeys).toEqual(["brandkit"]);
 
-    const files = await t.query(api.agentContextFiles.listByBusiness, { businessId });
+    const files = await t.query(internal.agentContextFiles.listByBusiness, { businessId });
     expect(files).toHaveLength(8);
     for (const key of CONTEXT_FILE_KEYS) {
       const file = files.find((f) => f.fileKey === key);
@@ -34,7 +34,7 @@ describe("seedAgentContext.seedDefaults", () => {
       expect(file!.content.length).toBeGreaterThan(200);
     }
 
-    const skills = await t.query(api.agentSkills.listByBusiness, { businessId });
+    const skills = await t.query(internal.agentSkills.listByBusiness, { businessId });
     expect(skills).toHaveLength(1);
     expect(skills[0]?.skillKey).toBe("brandkit");
     expect(skills[0]?.version).toBe(1);
@@ -45,14 +45,14 @@ describe("seedAgentContext.seedDefaults", () => {
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "seed-b");
 
-    await t.action(api.seedAgentContext.seedDefaults, {
+    await t.action(internal.seedAgentContext.seedDefaults, {
       businessId,
       provisionedAtIso: "2026-09-01",
     });
 
     const business = await t.query(internal.businesses.getSelf, { businessId });
-    const soul = await t.query(api.agentContextFiles.get, { businessId, fileKey: "SOUL" });
-    const businessFile = await t.query(api.agentContextFiles.get, {
+    const soul = await t.query(internal.agentContextFiles.get, { businessId, fileKey: "SOUL" });
+    const businessFile = await t.query(internal.agentContextFiles.get, {
       businessId,
       fileKey: "BUSINESS",
     });
@@ -65,21 +65,21 @@ describe("seedAgentContext.seedDefaults", () => {
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "seed-c");
 
-    await t.action(api.seedAgentContext.seedDefaults, {
+    await t.action(internal.seedAgentContext.seedDefaults, {
       businessId,
       provisionedAtIso: "2026-09-01",
     });
-    await t.action(api.seedAgentContext.seedDefaults, {
+    await t.action(internal.seedAgentContext.seedDefaults, {
       businessId,
       provisionedAtIso: "2026-09-02",
     });
 
-    const files = await t.query(api.agentContextFiles.listByBusiness, { businessId });
+    const files = await t.query(internal.agentContextFiles.listByBusiness, { businessId });
     expect(files.filter((f) => f.fileKey === "MEMORY")).toHaveLength(1);
     const memory = files.find((f) => f.fileKey === "MEMORY");
     expect(memory?.content).toContain("2026-09-02");
 
-    const skills = await t.query(api.agentSkills.listByBusiness, { businessId });
+    const skills = await t.query(internal.agentSkills.listByBusiness, { businessId });
     expect(skills).toHaveLength(1);
     expect(skills[0]?.version).toBe(2);
   });
@@ -94,7 +94,7 @@ describe("seedAgentContext.seedDefaults", () => {
     });
 
     await expect(
-      t.action(api.seedAgentContext.seedDefaults, {
+      t.action(internal.seedAgentContext.seedDefaults, {
         businessId,
         provisionedAtIso: "2026-09-01",
       }),
