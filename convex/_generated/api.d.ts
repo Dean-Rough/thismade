@@ -21,6 +21,7 @@ import type * as files from "../files.js";
 import type * as filesActions from "../filesActions.js";
 import type * as idempotencyKeys from "../idempotencyKeys.js";
 import type * as idempotencyKeysActions from "../idempotencyKeysActions.js";
+import type * as lib_agentContextTemplates from "../lib/agentContextTemplates.js";
 import type * as lib_apiKeyCrypto from "../lib/apiKeyCrypto.js";
 import type * as lib_events from "../lib/events.js";
 import type * as lib_richContent from "../lib/richContent.js";
@@ -32,6 +33,7 @@ import type * as payouts from "../payouts.js";
 import type * as payoutsActions from "../payoutsActions.js";
 import type * as products from "../products.js";
 import type * as productsActions from "../productsActions.js";
+import type * as seedAgentContext from "../seedAgentContext.js";
 
 import type {
   ApiFromModules,
@@ -53,6 +55,7 @@ declare const fullApi: ApiFromModules<{
   filesActions: typeof filesActions;
   idempotencyKeys: typeof idempotencyKeys;
   idempotencyKeysActions: typeof idempotencyKeysActions;
+  "lib/agentContextTemplates": typeof lib_agentContextTemplates;
   "lib/apiKeyCrypto": typeof lib_apiKeyCrypto;
   "lib/events": typeof lib_events;
   "lib/richContent": typeof lib_richContent;
@@ -64,6 +67,7 @@ declare const fullApi: ApiFromModules<{
   payoutsActions: typeof payoutsActions;
   products: typeof products;
   productsActions: typeof productsActions;
+  seedAgentContext: typeof seedAgentContext;
 }>;
 
 /**
