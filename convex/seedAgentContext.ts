@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { action } from "./_generated/server";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import {
   BRAND_IDENTITY_KIT_SKILL_KEY,
   CONTEXT_FILE_KEYS,
@@ -56,15 +56,19 @@ export const seedDefaults = action({
       provisionedAtIso: args.provisionedAtIso,
     });
 
+    // agentContextFiles.upsert / agentSkills.upsert are internal-only
+    // (THI-56) — this action already runs server-side inside Convex, so it
+    // reaches them directly rather than through the secret-gated
+    // *Actions.ts front doors that external callers use.
     for (const fileKey of CONTEXT_FILE_KEYS) {
-      await ctx.runMutation(api.agentContextFiles.upsert, {
+      await ctx.runMutation(internal.agentContextFiles.upsert, {
         businessId: args.businessId,
         fileKey,
         content: files[fileKey],
       });
     }
 
-    await ctx.runMutation(api.agentSkills.upsert, {
+    await ctx.runMutation(internal.agentSkills.upsert, {
       businessId: args.businessId,
       skillKey: BRAND_IDENTITY_KIT_SKILL_KEY,
       content: renderBrandIdentityKitSkill(),

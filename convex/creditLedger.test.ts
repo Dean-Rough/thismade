@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -19,7 +19,7 @@ describe("creditLedger: credit-gate before effect", () => {
     const businessId = await makeBusiness(t, "credit-a");
 
     await expect(
-      t.mutation(api.creditLedger.spend, {
+      t.mutation(internal.creditLedger.spend, {
         businessId,
         amount: 5,
         reason: "worker turn",
@@ -27,8 +27,8 @@ describe("creditLedger: credit-gate before effect", () => {
       }),
     ).rejects.toThrow("insufficient_credit");
 
-    expect(await t.query(api.creditLedger.getBalance, { businessId })).toBe(0);
-    const events = await t.query(api.agentEvents.listByBusiness, { businessId });
+    expect(await t.query(internal.creditLedger.getBalance, { businessId })).toBe(0);
+    const events = await t.query(internal.agentEvents.listByBusiness, { businessId });
     expect(events).toHaveLength(0);
   });
 
@@ -36,13 +36,13 @@ describe("creditLedger: credit-gate before effect", () => {
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "credit-b");
 
-    await t.mutation(api.creditLedger.grant, {
+    await t.mutation(internal.creditLedger.grant, {
       businessId,
       amount: 100,
       reason: "starter grant",
     });
 
-    const result = await t.mutation(api.creditLedger.spend, {
+    const result = await t.mutation(internal.creditLedger.spend, {
       businessId,
       amount: 30,
       reason: "worker turn",
@@ -51,39 +51,39 @@ describe("creditLedger: credit-gate before effect", () => {
     expect(result.balanceAfter).toBe(70);
     expect(result.replayed).toBe(false);
 
-    expect(await t.query(api.creditLedger.getBalance, { businessId })).toBe(70);
+    expect(await t.query(internal.creditLedger.getBalance, { businessId })).toBe(70);
 
-    const events = await t.query(api.agentEvents.listByBusiness, { businessId });
+    const events = await t.query(internal.agentEvents.listByBusiness, { businessId });
     expect(events).toHaveLength(1);
     expect(events[0].event.kind).toBe("credit_debit");
 
     await expect(
-      t.mutation(api.creditLedger.spend, {
+      t.mutation(internal.creditLedger.spend, {
         businessId,
         amount: 1000,
         reason: "runaway spend",
         idempotencyKey: "spend-2",
       }),
     ).rejects.toThrow("insufficient_credit");
-    expect(await t.query(api.creditLedger.getBalance, { businessId })).toBe(70);
+    expect(await t.query(internal.creditLedger.getBalance, { businessId })).toBe(70);
   });
 
   it("replays an already-applied spend on a repeated idempotencyKey instead of double-debiting", async () => {
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "credit-c");
-    await t.mutation(api.creditLedger.grant, {
+    await t.mutation(internal.creditLedger.grant, {
       businessId,
       amount: 50,
       reason: "starter grant",
     });
 
-    const first = await t.mutation(api.creditLedger.spend, {
+    const first = await t.mutation(internal.creditLedger.spend, {
       businessId,
       amount: 20,
       reason: "worker turn",
       idempotencyKey: "retry-key",
     });
-    const second = await t.mutation(api.creditLedger.spend, {
+    const second = await t.mutation(internal.creditLedger.spend, {
       businessId,
       amount: 20,
       reason: "worker turn (retry)",
@@ -93,7 +93,7 @@ describe("creditLedger: credit-gate before effect", () => {
     expect(first.balanceAfter).toBe(30);
     expect(second.balanceAfter).toBe(30);
     expect(second.replayed).toBe(true);
-    expect(await t.query(api.creditLedger.getBalance, { businessId })).toBe(30);
+    expect(await t.query(internal.creditLedger.getBalance, { businessId })).toBe(30);
   });
 });
 
@@ -103,13 +103,13 @@ describe("creditLedger: tenancy", () => {
     const businessAId = await makeBusiness(t, "credit-tenancy-a");
     const businessBId = await makeBusiness(t, "credit-tenancy-b");
 
-    await t.mutation(api.creditLedger.grant, {
+    await t.mutation(internal.creditLedger.grant, {
       businessId: businessAId,
       amount: 100,
       reason: "grant",
     });
 
-    expect(await t.query(api.creditLedger.getBalance, { businessId: businessAId })).toBe(100);
-    expect(await t.query(api.creditLedger.getBalance, { businessId: businessBId })).toBe(0);
+    expect(await t.query(internal.creditLedger.getBalance, { businessId: businessAId })).toBe(100);
+    expect(await t.query(internal.creditLedger.getBalance, { businessId: businessBId })).toBe(0);
   });
 });
