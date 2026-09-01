@@ -214,3 +214,53 @@ describe("service secret gate (THI-56)", () => {
     expect(balance).toBe(50);
   });
 });
+
+// THI-56 follow-up: seedAgentContext.seedDefaults was still a public
+// `action` with no auth check even after THI-56 converted the mutations it
+// calls to internal-only — the highest-severity residual gap, since an
+// anonymous caller could overwrite a business's entire agent identity (all
+// 8 context files + the brandkit skill) with attacker-chosen content just
+// by supplying its businessId.
+describe("service secret gate (THI-42 seedAgentContext follow-up)", () => {
+  afterEach(() => {
+    delete process.env.CONVEX_SERVICE_SECRET;
+  });
+
+  it("blocks an unauthenticated call to seedAgentContextActions.seedDefaults", async () => {
+    process.env.CONVEX_SERVICE_SECRET = "correct-secret";
+    const t = convexTest(schema, modules);
+    const businessId = await t.mutation(internal.businesses.create, {
+      name: "Business A",
+      slug: "service-auth-seed-agent-context",
+      ownerUserId: "user_a",
+    });
+
+    await expect(
+      t.action(api.seedAgentContextActions.seedDefaults, {
+        businessId,
+        provisionedAtIso: "2026-09-01",
+        secret: "not-the-real-secret",
+      }),
+    ).rejects.toThrow();
+
+    const files = await t.query(internal.agentContextFiles.listByBusiness, { businessId });
+    expect(files).toHaveLength(0);
+  });
+
+  it("delegates to the internal action once the correct secret is supplied", async () => {
+    process.env.CONVEX_SERVICE_SECRET = "correct-secret";
+    const t = convexTest(schema, modules);
+    const businessId = await t.mutation(internal.businesses.create, {
+      name: "Business A",
+      slug: "service-auth-seed-agent-context-correct",
+      ownerUserId: "user_a",
+    });
+
+    const result = await t.action(api.seedAgentContextActions.seedDefaults, {
+      businessId,
+      provisionedAtIso: "2026-09-01",
+      secret: "correct-secret",
+    });
+    expect(result.fileKeys).toHaveLength(8);
+  });
+});

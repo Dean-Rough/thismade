@@ -39,6 +39,7 @@ import type * as payoutsActions from "../payoutsActions.js";
 import type * as products from "../products.js";
 import type * as productsActions from "../productsActions.js";
 import type * as seedAgentContext from "../seedAgentContext.js";
+import type * as seedAgentContextActions from "../seedAgentContextActions.js";
 
 import type {
   ApiFromModules,
@@ -78,6 +79,7 @@ declare const fullApi: ApiFromModules<{
   products: typeof products;
   productsActions: typeof productsActions;
   seedAgentContext: typeof seedAgentContext;
+  seedAgentContextActions: typeof seedAgentContextActions;
 }>;
 
 /**
