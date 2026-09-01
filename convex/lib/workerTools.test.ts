@@ -425,6 +425,13 @@ describe("BROWSER_DRIVER_SCRIPT addInitScript link guard, executed against the a
     expect(stripSpeculativeLinkMarkup(args.map(String).join(""))).not.toContain("169.254.169.254");
     expect(args.map(stripSpeculativeLinkMarkup).join("")).toContain("169.254.169.254");
   });
+
+  // THI-82: see the equivalent Node-side test above for the root cause.
+  it("strips a link tag even when an unquoted attribute value contains an unmatched literal quote character", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    expect(stripSpeculativeLinkMarkup('<link rel=preconnect href=fo"o>')).not.toContain("preconnect");
+    expect(stripSpeculativeLinkMarkup("<link rel=preconnect href=abc'def>")).not.toContain("preconnect");
+  });
 });
 
 describe("BROWSER_DRIVER_SCRIPT allowRequest body-rewrite mirror, executed against the actual shipped text (THI-81)", () => {
@@ -445,6 +452,13 @@ describe("BROWSER_DRIVER_SCRIPT allowRequest body-rewrite mirror, executed again
     const strip = loadBodyRewriteMirror();
     const benign = '<link rel="stylesheet" href="/app.css">';
     expect(strip(benign)).toBe(benign);
+  });
+
+  // THI-82: see the equivalent Node-side test above for the root cause.
+  it("strips a link tag even when an unquoted attribute value contains an unmatched literal quote character", () => {
+    const strip = loadBodyRewriteMirror();
+    expect(strip('<link rel=preconnect href=fo"o>')).not.toContain("preconnect");
+    expect(strip("<link rel=preconnect href=abc'def>")).not.toContain("preconnect");
   });
 });
 
@@ -571,5 +585,17 @@ describe("stripSpeculativeLinkTags (THI-75)", () => {
   it("does not let a decoy attribute value containing the text 'rel=' hide the real rel attribute", () => {
     const html = '<link data-note="rel=bogus" rel="preconnect" href="https://evil.example">';
     expect(stripSpeculativeLinkTags(html)).not.toContain("evil.example");
+  });
+
+  // THI-82: the Finding 2 fix's unquoted-value alternative (`[^'">]`)
+  // excluded quote characters outright, assuming any quote belongs to a
+  // matched quoted span. A stray unescaped quote inside an *unquoted* value
+  // is legal per the WHATWG unquoted-attribute-value state - it's just
+  // appended to the value, not treated as opening a span or closing the tag
+  // - so no alternative could consume it and the whole tag failed to match
+  // at all (zero stripping, not truncation).
+  it("strips a link tag even when an unquoted attribute value contains an unmatched literal quote character", () => {
+    expect(stripSpeculativeLinkTags('<link rel=preconnect href=fo"o>')).not.toContain("preconnect");
+    expect(stripSpeculativeLinkTags("<link rel=preconnect href=abc'def>")).not.toContain("preconnect");
   });
 });

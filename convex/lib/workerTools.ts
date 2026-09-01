@@ -387,8 +387,22 @@ async function validateNavigationUrl(
 // an atomic name=value unit, so a decoy's quoted value can never be
 // mistaken for a separate attribute) and blocking if any of them is a real
 // rel="preconnect|dns-prefetch" closes that too.
+// THI-82: that fix's unquoted-value alternative excluded quote characters
+// entirely (`[^'">]`), on the assumption any quote belongs to a matched
+// quoted-value span. Real HTML doesn't require that - per the WHATWG
+// "attribute value (unquoted) state," a stray unescaped quote inside an
+// unquoted value is a parse error but still gets appended to the value as an
+// ordinary character, it doesn't open a quoted span or close the tag. A tag
+// like `<link rel=preconnect href=fo"o>` has no alternative that can consume
+// that stray `"` (no matching close-quote, and the unquoted branch excludes
+// it outright), so the whole repetition stalls and the tag never matches at
+// all - zero stripping, not just truncation. Widening the unquoted
+// alternative to `[^>]` fixes this: only `>` ends the repetition outside a
+// matched quoted span, so an embedded `>` inside a validly-quoted value (the
+// original Finding 2 case) is still handled atomically by the quoted
+// alternatives, which are tried first.
 export function stripSpeculativeLinkTags(html: string): string {
-  return html.replace(/<link\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi, (tag) => {
+  return html.replace(/<link\b(?:"[^"]*"|'[^']*'|[^>])*>/gi, (tag) => {
     const attrPattern = /([a-zA-Z][-a-zA-Z0-9]*)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g;
     let attrMatch: RegExpExecArray | null;
     while ((attrMatch = attrPattern.exec(tag))) {
@@ -641,7 +655,7 @@ async function pinHostname(hostname, existingRules) {
 //      an ordinary fetch does - closed via the same stripSpeculativeLinkTags
 //      rewrite regardless of the answer.
 function stripSpeculativeLinkTags(html) {
-  return html.replace(/<link\\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi, (tag) => {
+  return html.replace(/<link\\b(?:"[^"]*"|'[^']*'|[^>])*>/gi, (tag) => {
     const attrPattern = /([a-zA-Z][-a-zA-Z0-9]*)\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)/g;
     let attrMatch;
     while ((attrMatch = attrPattern.exec(tag))) {
@@ -883,7 +897,7 @@ async function navigateWithPinning(targetUrl, rules) {
       // text "rel=" could hide a later real one from a single first-match
       // regex).
       function stripSpeculativeLinkMarkup(html) {
-        return String(html == null ? "" : html).replace(/<link\\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi, (tag) => {
+        return String(html == null ? "" : html).replace(/<link\\b(?:"[^"]*"|'[^']*'|[^>])*>/gi, (tag) => {
           const attrPattern = /([a-zA-Z][-a-zA-Z0-9]*)\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)/g;
           let attrMatch;
           while ((attrMatch = attrPattern.exec(tag))) {
