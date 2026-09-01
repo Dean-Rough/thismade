@@ -5,6 +5,7 @@ import { authenticateRequest, requireScope } from "@/lib/api/auth";
 import { apiError, ok } from "@/lib/api/envelope";
 import { readIdempotencyKey, withIdempotency } from "@/lib/api/idempotency";
 import { serializeOrder } from "@/lib/api/orders";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 
 const ROUTE = "POST /v1/orders/:id/ship";
 
@@ -24,9 +25,10 @@ async function fetchScopedOrder(
   rawId: string,
 ): Promise<Doc<"orders"> | null> {
   try {
-    return await client.query(api.orders.getScopedById, {
+    return await client.action(api.ordersActions.getScopedById, {
       orderId: rawId as Id<"orders">,
       businessId,
+      secret: getConvexServiceSecret(),
     });
   } catch {
     return null;
@@ -82,11 +84,12 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
         return apiError("validation_failed", "This order has already been shipped.");
       }
 
-      const updated = await client.mutation(api.orders.markShipped, {
+      const updated = await client.action(api.ordersActions.markShipped, {
         businessId: auth.context.businessId,
         orderId: existing._id,
         shippedAt: Date.now(),
         trackingCode: body.trackingCode,
+        secret: getConvexServiceSecret(),
       });
       if (!updated) {
         return apiError("not_found", "Order not found.");

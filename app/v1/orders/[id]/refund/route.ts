@@ -5,6 +5,7 @@ import { authenticateRequest, requireScope } from "@/lib/api/auth";
 import { apiError, ok } from "@/lib/api/envelope";
 import { readIdempotencyKey, withIdempotency } from "@/lib/api/idempotency";
 import { serializeOrder } from "@/lib/api/orders";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 import { refundCheckoutSession } from "@/lib/stripe/refunds";
 
 const ROUTE = "POST /v1/orders/:id/refund";
@@ -25,9 +26,10 @@ async function fetchScopedOrder(
   rawId: string,
 ): Promise<Doc<"orders"> | null> {
   try {
-    return await client.query(api.orders.getScopedById, {
+    return await client.action(api.ordersActions.getScopedById, {
       orderId: rawId as Id<"orders">,
       businessId,
+      secret: getConvexServiceSecret(),
     });
   } catch {
     return null;
@@ -79,10 +81,11 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
         return apiError("internal", "Failed to refund the order via Stripe test mode.");
       }
 
-      const updated = await client.mutation(api.orders.markRefunded, {
+      const updated = await client.action(api.ordersActions.markRefunded, {
         businessId: auth.context.businessId,
         orderId: existing._id,
         refundedAt: Date.now(),
+        secret: getConvexServiceSecret(),
       });
       if (!updated) {
         return apiError("not_found", "Order not found.");

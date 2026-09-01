@@ -1,12 +1,12 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
 
 async function makeBusiness(t: ReturnType<typeof convexTest>, slug: string) {
-  return t.mutation(api.businesses.create, {
+  return t.mutation(internal.businesses.create, {
     name: `Business ${slug}`,
     slug,
     ownerUserId: `user_${slug}`,

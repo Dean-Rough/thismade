@@ -2,6 +2,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { authenticateRequest, requireScope } from "@/lib/api/auth";
 import { apiError, ok } from "@/lib/api/envelope";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 
 function getConvexClient(): ConvexHttpClient {
   const url = process.env.NEXT_PUBLIC_CONVEX_URL;
@@ -21,8 +22,9 @@ export async function GET(req: Request) {
   }
 
   const client = getConvexClient();
-  const status = await client.query(api.payouts.getConnectStatus, {
+  const status = await client.action(api.payoutsActions.getConnectStatus, {
     businessId: auth.context.businessId,
+    secret: getConvexServiceSecret(),
   });
 
   if (!status) {

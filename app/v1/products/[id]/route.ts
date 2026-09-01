@@ -5,6 +5,7 @@ import { authenticateRequest, requireScope } from "@/lib/api/auth";
 import { apiError, ok } from "@/lib/api/envelope";
 import { readIdempotencyKey, withIdempotency } from "@/lib/api/idempotency";
 import { serializeProduct } from "@/lib/api/products";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 import { syncProductToStripe } from "@/lib/stripe/products";
 
 const ROUTE = "PATCH /v1/products/:id";
@@ -28,9 +29,10 @@ async function fetchScopedProduct(
   rawId: string,
 ): Promise<Doc<"products"> | null> {
   try {
-    return await client.query(api.products.getScopedById, {
+    return await client.action(api.productsActions.getScopedById, {
       productId: rawId as Id<"products">,
       businessId,
+      secret: getConvexServiceSecret(),
     });
   } catch {
     return null;
@@ -162,12 +164,13 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
         }
       }
 
-      const updated = await client.mutation(api.products.update, {
+      const updated = await client.action(api.productsActions.update, {
         businessId: auth.context.businessId,
         productId: existing._id,
         ...patch,
         stripeProductId: stripeIds?.stripeProductId,
         stripePriceId: stripeIds?.stripePriceId,
+        secret: getConvexServiceSecret(),
       });
 
       if (!updated) {

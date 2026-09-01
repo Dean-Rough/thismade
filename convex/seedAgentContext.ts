@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { action } from "./_generated/server";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import {
   BRAND_IDENTITY_KIT_SKILL_KEY,
   CONTEXT_FILE_KEYS,
@@ -33,7 +33,11 @@ export const seedDefaults = action({
     provisionedAtIso: v.string(),
   },
   handler: async (ctx, args) => {
-    const business = await ctx.runQuery(api.businesses.getSelf, {
+    // businesses.getSelf is internal-only (THI-42) — this action already
+    // runs server-side inside Convex, so it reaches it directly rather than
+    // through the secret-gated businessesActions.getSelf front door that
+    // external callers use.
+    const business = await ctx.runQuery(internal.businesses.getSelf, {
       businessId: args.businessId,
     });
     if (!business) {

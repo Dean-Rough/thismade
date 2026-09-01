@@ -4,6 +4,7 @@ import type { Doc } from "@/convex/_generated/dataModel";
 import { authenticateRequest, requireScope } from "@/lib/api/auth";
 import { apiError, ok } from "@/lib/api/envelope";
 import { readIdempotencyKey, withIdempotency } from "@/lib/api/idempotency";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 
 const ROUTE = "POST /v1/products";
 
@@ -39,8 +40,9 @@ export async function GET(req: Request) {
   }
 
   const client = getConvexClient();
-  const products = await client.query(api.products.listByBusiness, {
+  const products = await client.action(api.productsActions.listByBusiness, {
     businessId: auth.context.businessId,
+    secret: getConvexServiceSecret(),
   });
 
   return ok(products.map(serializeProduct));
@@ -95,13 +97,14 @@ export async function POST(req: Request) {
         return apiError("validation_failed", "deliverableFileUrl must be a string.");
       }
 
-      const product = await client.mutation(api.products.create, {
+      const product = await client.action(api.productsActions.create, {
         businessId: auth.context.businessId,
         title: body.title,
         description: body.description,
         priceAmountCents: body.priceAmountCents,
         currency: body.currency,
         deliverableFileUrl: body.deliverableFileUrl as string | undefined,
+        secret: getConvexServiceSecret(),
       });
       if (!product) {
         return apiError("internal", "Product was created but could not be read back.");

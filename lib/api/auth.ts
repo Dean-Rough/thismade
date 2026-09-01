@@ -2,6 +2,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { hashApiKey } from "@/convex/lib/apiKeyCrypto";
+import { getConvexServiceSecret } from "./serviceSecret";
 
 export type ApiAuthContext = {
   businessId: Id<"businesses">;
@@ -37,12 +38,13 @@ export async function authenticateRequest(req: Request): Promise<ApiAuthResult> 
 
   const hashedKey = await hashApiKey(rawKey);
   const client = getConvexClient();
-  const key = await client.query(api.apiKeys.verifyByHash, { hashedKey });
+  const secret = getConvexServiceSecret();
+  const key = await client.action(api.apiKeysActions.verifyByHash, { hashedKey, secret });
   if (!key) {
     return { ok: false, reason: "invalid" };
   }
 
-  void client.mutation(api.apiKeys.touchLastUsed, { apiKeyId: key._id });
+  void client.action(api.apiKeysActions.touchLastUsed, { apiKeyId: key._id, secret });
 
   return {
     ok: true,

@@ -1,11 +1,14 @@
 import { v } from "convex/values";
-import { mutation } from "./_generated/server";
+import { internalMutation } from "./_generated/server";
 
+// Internal-only (THI-42): fronted by idempotencyKeysActions.ts for
+// lib/api/idempotency.ts's use.
+//
 // Atomically checks for a prior attempt at this (business, route, key) triple
 // and, if none exists, claims it by inserting an "in_progress" row — all
 // inside a single Convex mutation, so two concurrent requests with the same
 // key can never both observe "no existing record" and both proceed.
-export const beginOrReplay = mutation({
+export const beginOrReplay = internalMutation({
   args: {
     businessId: v.id("businesses"),
     route: v.string(),
@@ -46,7 +49,7 @@ export const beginOrReplay = mutation({
   },
 });
 
-export const complete = mutation({
+export const complete = internalMutation({
   args: {
     id: v.id("idempotencyKeys"),
     responseStatus: v.number(),

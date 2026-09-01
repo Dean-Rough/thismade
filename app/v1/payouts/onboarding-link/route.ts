@@ -3,6 +3,7 @@ import { api } from "@/convex/_generated/api";
 import { authenticateRequest, requireScope } from "@/lib/api/auth";
 import { apiError, ok } from "@/lib/api/envelope";
 import { readIdempotencyKey, withIdempotency } from "@/lib/api/idempotency";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 import { createConnectExpressAccount, createConnectOnboardingLink } from "@/lib/stripe/connect";
 
 const ROUTE = "POST /v1/payouts/onboarding-link";
@@ -44,8 +45,9 @@ export async function POST(req: Request) {
     idempotency.key,
     rawBody,
     async () => {
-      const status = await client.query(api.payouts.getConnectStatus, {
+      const status = await client.action(api.payoutsActions.getConnectStatus, {
         businessId: auth.context.businessId,
+        secret: getConvexServiceSecret(),
       });
       if (!status) {
         return apiError("not_found", "Business not found.");
@@ -58,9 +60,10 @@ export async function POST(req: Request) {
       if (!accountId) {
         const account = await createConnectExpressAccount();
         accountId = account.id;
-        await client.mutation(api.payouts.setStripeConnectAccountId, {
+        await client.action(api.payoutsActions.setStripeConnectAccountId, {
           businessId: auth.context.businessId,
           stripeConnectAccountId: accountId,
+          secret: getConvexServiceSecret(),
         });
       }
 

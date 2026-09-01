@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hashApiKey } from "@/convex/lib/apiKeyCrypto";
 
 process.env.NEXT_PUBLIC_CONVEX_URL = "https://fake.convex.cloud";
+process.env.CONVEX_SERVICE_SECRET = "test-secret";
 
 // Fake Convex backend: mocks the wire boundary (`convex/browser`'s
 // ConvexHttpClient) rather than the route's own logic, so GET/PATCH run for
@@ -57,24 +58,24 @@ const backend = vi.hoisted(() => {
 
   async function dispatch(name: string, args: any): Promise<any> {
     switch (name) {
-      case "apiKeys:verifyByHash": {
+      case "apiKeysActions:verifyByHash": {
         for (const key of apiKeys.values()) {
           if (key.hashedKey === args.hashedKey && !key.revokedAt) return key;
         }
         return null;
       }
-      case "apiKeys:touchLastUsed":
+      case "apiKeysActions:touchLastUsed":
         return null;
-      case "businesses:getSelf":
+      case "businessesActions:getSelf":
         return businesses.get(args.businessId) ?? null;
-      case "businesses:updateCheckoutReturnUrl": {
-        bump("businesses:updateCheckoutReturnUrl");
+      case "businessesActions:updateCheckoutReturnUrl": {
+        bump("businessesActions:updateCheckoutReturnUrl");
         const b = businesses.get(args.businessId);
         if (!b) return null;
         b.checkoutReturnUrl = args.checkoutReturnUrl;
         return b;
       }
-      case "idempotencyKeys:beginOrReplay": {
+      case "idempotencyKeysActions:beginOrReplay": {
         const mapKey = `${args.businessId}|${args.route}|${args.key}`;
         for (const record of idempotency.values()) {
           if (record.mapKey === mapKey) {
@@ -91,7 +92,7 @@ const backend = vi.hoisted(() => {
         idempotency.set(id, { id, mapKey, requestHash: args.requestHash, status: "in_progress" });
         return { outcome: "began", id };
       }
-      case "idempotencyKeys:complete": {
+      case "idempotencyKeysActions:complete": {
         const record = idempotency.get(args.id);
         if (record) {
           record.status = "completed";
@@ -117,6 +118,9 @@ vi.mock("convex/browser", async () => {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
       async mutation(fnRef: unknown, args: unknown) {
+        return backend.dispatch(getFunctionName(fnRef as never), args);
+      }
+      async action(fnRef: unknown, args: unknown) {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
     },
@@ -275,7 +279,7 @@ describe("PATCH /v1/business", () => {
     const body = await res.json();
     expect(body.data.id).toBe(businessAId);
     expect(body.data.checkoutReturnUrl).toBe("https://alpha.example/return");
-    expect(backend.mutationCallCounts.get("businesses:updateCheckoutReturnUrl")).toBe(1);
+    expect(backend.mutationCallCounts.get("businessesActions:updateCheckoutReturnUrl")).toBe(1);
   });
 
   it("replays the exact cached response on a duplicate request instead of mutating again", async () => {
@@ -292,7 +296,7 @@ describe("PATCH /v1/business", () => {
     expect(second.status).toBe(200);
     expect(secondBody).toEqual(firstBody);
     // The underlying mutation must have run exactly once across both requests.
-    expect(backend.mutationCallCounts.get("businesses:updateCheckoutReturnUrl")).toBe(1);
+    expect(backend.mutationCallCounts.get("businessesActions:updateCheckoutReturnUrl")).toBe(1);
   });
 
   it("rejects reusing the same Idempotency-Key with a different body", async () => {
@@ -317,7 +321,7 @@ describe("PATCH /v1/business", () => {
     const body = await second.json();
     expect(body.error.code).toBe("idempotency_conflict");
     // Only the first request's mutation should have applied.
-    expect(backend.mutationCallCounts.get("businesses:updateCheckoutReturnUrl")).toBe(1);
+    expect(backend.mutationCallCounts.get("businessesActions:updateCheckoutReturnUrl")).toBe(1);
   });
 
   it("scopes the Idempotency-Key per business, so two businesses can reuse the same key value independently", async () => {
@@ -338,6 +342,6 @@ describe("PATCH /v1/business", () => {
     );
     expect(resA.status).toBe(200);
     expect(resB.status).toBe(200);
-    expect(backend.mutationCallCounts.get("businesses:updateCheckoutReturnUrl")).toBe(2);
+    expect(backend.mutationCallCounts.get("businessesActions:updateCheckoutReturnUrl")).toBe(2);
   });
 });

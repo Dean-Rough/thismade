@@ -57,13 +57,15 @@ definition of done silently" rule.
 export NEXT_PUBLIC_CONVEX_URL="https://your-deployment.convex.cloud"
 export SMOKE_API_BASE_URL="http://localhost:3000"   # or a deployed preview URL
 export STRIPE_SECRET_KEY="sk_test_..."               # must start with sk_test_
+export CONVEX_SERVICE_SECRET="..."                   # same value set via `npx convex env set` — see THI-42
 npm run test:e2e
 ```
 
-The test seeds its own two throwaway businesses + API keys directly via
-Convex mutations (mirroring how every other `*.test.ts` in this repo seeds
-fixtures), so no manual dashboard setup is needed beyond the account/deploy
-steps above.
+The test seeds its own two throwaway businesses + API keys via
+`businessesActions.create`/`apiKeysActions.create` (secret-gated public
+actions — see THI-42), mirroring how the app's own server-only code reaches
+the same internal mutations, so no manual dashboard setup is needed beyond
+the account/deploy steps above.
 
 ## What it proves
 

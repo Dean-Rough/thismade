@@ -1,12 +1,12 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
 
 async function createBusiness(t: ReturnType<typeof convexTest>, slug: string) {
-  return t.mutation(api.businesses.create, {
+  return t.mutation(internal.businesses.create, {
     name: `Business ${slug}`,
     slug,
     ownerUserId: `user_${slug}`,
@@ -18,7 +18,7 @@ describe("files: upload -> complete", () => {
     const t = convexTest(schema, modules);
     const businessId = await createBusiness(t, "files-a");
 
-    const { fileId, uploadUrl } = await t.mutation(api.files.createPendingUpload, {
+    const { fileId, uploadUrl } = await t.mutation(internal.files.createPendingUpload, {
       businessId,
     });
 
@@ -30,7 +30,7 @@ describe("files: upload -> complete", () => {
     const t = convexTest(schema, modules);
     const businessId = await createBusiness(t, "files-b");
 
-    const { fileId } = await t.mutation(api.files.createPendingUpload, { businessId });
+    const { fileId } = await t.mutation(internal.files.createPendingUpload, { businessId });
 
     // Simulate the caller PUTting bytes to the signed URL: store a real blob
     // directly against Convex storage to get a real storageId, exactly like
@@ -39,7 +39,7 @@ describe("files: upload -> complete", () => {
       return ctx.storage.store(new Blob(["hello deliverable"], { type: "text/plain" }));
     });
 
-    const result = await t.mutation(api.files.completeUpload, {
+    const result = await t.mutation(internal.files.completeUpload, {
       businessId,
       fileId,
       storageId,
@@ -65,7 +65,7 @@ describe("files: upload -> complete", () => {
     const businessAId = await createBusiness(t, "files-c-a");
     const businessBId = await createBusiness(t, "files-c-b");
 
-    const { fileId } = await t.mutation(api.files.createPendingUpload, {
+    const { fileId } = await t.mutation(internal.files.createPendingUpload, {
       businessId: businessAId,
     });
     const storageId = await t.run(async (ctx) => {
@@ -75,7 +75,7 @@ describe("files: upload -> complete", () => {
     // Business B tries to finalize business A's pending upload. The REST
     // layer (app/v1/files/complete) turns this null into a 404 — never a 403
     // that would confirm the fileId exists.
-    const result = await t.mutation(api.files.completeUpload, {
+    const result = await t.mutation(internal.files.completeUpload, {
       businessId: businessBId,
       fileId,
       storageId,
@@ -89,8 +89,8 @@ describe("files: upload -> complete", () => {
     const businessAId = await createBusiness(t, "files-d-a");
     const businessBId = await createBusiness(t, "files-d-b");
 
-    await t.mutation(api.files.createPendingUpload, { businessId: businessAId });
-    await t.mutation(api.files.createPendingUpload, { businessId: businessBId });
+    await t.mutation(internal.files.createPendingUpload, { businessId: businessAId });
+    await t.mutation(internal.files.createPendingUpload, { businessId: businessBId });
 
     const forA = await t.run(async (ctx) =>
       ctx.db

@@ -1,7 +1,11 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import { getScoped } from "./lib/tenancy";
 import type { Doc } from "./_generated/dataModel";
+
+// Internal-only (THI-42): every function here is fronted by the matching
+// action in ordersActions.ts for the /v1 REST layer and the Stripe webhook
+// route's use.
 
 // Called from the Stripe webhook (checkout.session.completed) to record a
 // paid order. Stripe can redeliver the same event (retry after a timeout, a
@@ -11,7 +15,7 @@ import type { Doc } from "./_generated/dataModel";
 // mutation's reads and writes as one transaction with optimistic concurrency
 // control, so two concurrent deliveries can't both observe "no existing row"
 // and both insert.
-export const createFromCheckoutSession = mutation({
+export const createFromCheckoutSession = internalMutation({
   args: {
     businessId: v.id("businesses"),
     productId: v.id("products"),
@@ -49,7 +53,7 @@ export const createFromCheckoutSession = mutation({
 // the same id gets null, indistinguishable from a nonexistent id. The REST
 // layer turns this into a plain 404, never a 403. Mirrors
 // products.getScopedById.
-export const getScopedById = query({
+export const getScopedById = internalQuery({
   args: {
     orderId: v.id("orders"),
     businessId: v.id("businesses"),
@@ -59,7 +63,7 @@ export const getScopedById = query({
   },
 });
 
-export const listByBusiness = query({
+export const listByBusiness = internalQuery({
   args: { businessId: v.id("businesses") },
   handler: async (ctx, args) => {
     return ctx.db
@@ -75,7 +79,7 @@ export const listByBusiness = query({
 // `refund_already_issued` before this mutation ever runs and before Stripe
 // is called again — see DECISIONS.md §orders. This mutation only re-checks
 // tenancy, matching products.update's shape.
-export const markRefunded = mutation({
+export const markRefunded = internalMutation({
   args: {
     businessId: v.id("businesses"),
     orderId: v.id("orders"),
@@ -95,7 +99,7 @@ export const markRefunded = mutation({
 // refunded order can still be marked shipped (see DECISIONS.md §orders). The
 // REST layer rejects a double-ship (existing.shippedAt already set) before
 // calling this mutation.
-export const markShipped = mutation({
+export const markShipped = internalMutation({
   args: {
     businessId: v.id("businesses"),
     orderId: v.id("orders"),

@@ -4,6 +4,7 @@ import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { authenticateRequest, requireScope } from "@/lib/api/auth";
 import { apiError, ok } from "@/lib/api/envelope";
 import { serializeOrder } from "@/lib/api/orders";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 
 function getConvexClient(): ConvexHttpClient {
   const url = process.env.NEXT_PUBLIC_CONVEX_URL;
@@ -21,9 +22,10 @@ async function fetchScopedOrder(
   rawId: string,
 ): Promise<Doc<"orders"> | null> {
   try {
-    return await client.query(api.orders.getScopedById, {
+    return await client.action(api.ordersActions.getScopedById, {
       orderId: rawId as Id<"orders">,
       businessId,
+      secret: getConvexServiceSecret(),
     });
   } catch {
     return null;

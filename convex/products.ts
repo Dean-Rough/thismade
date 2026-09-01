@@ -1,11 +1,13 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import { getScoped } from "./lib/tenancy";
 import type { Doc } from "./_generated/dataModel";
 
 const STATUS = v.union(v.literal("active"), v.literal("draft"), v.literal("archived"));
 
-export const create = mutation({
+// Internal-only (THI-42): every function here is fronted by the matching
+// action in productsActions.ts for the /v1 REST layer's use.
+export const create = internalMutation({
   args: {
     businessId: v.id("businesses"),
     title: v.string(),
@@ -31,7 +33,7 @@ export const create = mutation({
 // The tenancy contract on the products table: a different business asking
 // for the same id gets null, indistinguishable from a nonexistent id. The
 // REST layer turns this into a plain 404, never a 403.
-export const getScopedById = query({
+export const getScopedById = internalQuery({
   args: {
     productId: v.id("products"),
     businessId: v.id("businesses"),
@@ -46,7 +48,7 @@ export const getScopedById = query({
 // are supplied by the REST layer after a successful test-mode Stripe sync —
 // Convex mutations can't make outbound HTTP calls, so that sync happens
 // before this mutation is invoked and is passed in as plain data.
-export const update = mutation({
+export const update = internalMutation({
   args: {
     businessId: v.id("businesses"),
     productId: v.id("products"),
@@ -80,7 +82,7 @@ export const update = mutation({
   },
 });
 
-export const listByBusiness = query({
+export const listByBusiness = internalQuery({
   args: { businessId: v.id("businesses") },
   handler: async (ctx, args) => {
     return ctx.db

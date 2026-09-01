@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hashApiKey } from "@/convex/lib/apiKeyCrypto";
 
 process.env.NEXT_PUBLIC_CONVEX_URL = "https://fake.convex.cloud";
+process.env.CONVEX_SERVICE_SECRET = "test-secret";
 
 // Fake Convex backend, mirroring app/v1/business/route.test.ts's approach:
 // mock the wire boundary (`convex/browser`) rather than the route's own
@@ -38,20 +39,20 @@ const backend = vi.hoisted(() => {
 
   async function dispatch(name: string, args: any): Promise<any> {
     switch (name) {
-      case "apiKeys:verifyByHash": {
+      case "apiKeysActions:verifyByHash": {
         for (const key of apiKeys.values()) {
           if (key.hashedKey === args.hashedKey && !key.revokedAt) return key;
         }
         return null;
       }
-      case "apiKeys:touchLastUsed":
+      case "apiKeysActions:touchLastUsed":
         return null;
-      case "files:createPendingUpload": {
+      case "filesActions:createPendingUpload": {
         const fileId = nextId("file");
         files.set(fileId, { _id: fileId, businessId: args.businessId, status: "pending" });
         return { fileId, uploadUrl: `https://fake.convex.cloud/api/storage/upload?token=${fileId}` };
       }
-      case "idempotencyKeys:beginOrReplay": {
+      case "idempotencyKeysActions:beginOrReplay": {
         const mapKey = `${args.businessId}|${args.route}|${args.key}`;
         for (const record of idempotency.values()) {
           if (record.mapKey === mapKey) {
@@ -68,7 +69,7 @@ const backend = vi.hoisted(() => {
         idempotency.set(id, { id, mapKey, requestHash: args.requestHash, status: "in_progress" });
         return { outcome: "began", id };
       }
-      case "idempotencyKeys:complete": {
+      case "idempotencyKeysActions:complete": {
         const record = idempotency.get(args.id);
         if (record) {
           record.status = "completed";
@@ -94,6 +95,9 @@ vi.mock("convex/browser", async () => {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
       async mutation(fnRef: unknown, args: unknown) {
+        return backend.dispatch(getFunctionName(fnRef as never), args);
+      }
+      async action(fnRef: unknown, args: unknown) {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
     },

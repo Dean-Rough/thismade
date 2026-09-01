@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hashApiKey } from "@/convex/lib/apiKeyCrypto";
 
 process.env.NEXT_PUBLIC_CONVEX_URL = "https://fake.convex.cloud";
+process.env.CONVEX_SERVICE_SECRET = "test-secret";
 
 // Fake Convex backend: mocks the wire boundary (`convex/browser`'s
 // ConvexHttpClient) rather than the route's own logic — same approach as
@@ -70,15 +71,15 @@ const backend = vi.hoisted(() => {
 
   async function dispatch(name: string, args: any): Promise<any> {
     switch (name) {
-      case "apiKeys:verifyByHash": {
+      case "apiKeysActions:verifyByHash": {
         for (const key of apiKeys.values()) {
           if (key.hashedKey === args.hashedKey && !key.revokedAt) return key;
         }
         return null;
       }
-      case "apiKeys:touchLastUsed":
+      case "apiKeysActions:touchLastUsed":
         return null;
-      case "orders:listByBusiness": {
+      case "ordersActions:listByBusiness": {
         return Array.from(orders.values()).filter((o) => o.businessId === args.businessId);
       }
       default:
@@ -98,6 +99,9 @@ vi.mock("convex/browser", async () => {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
       async mutation(fnRef: unknown, args: unknown) {
+        return backend.dispatch(getFunctionName(fnRef as never), args);
+      }
+      async action(fnRef: unknown, args: unknown) {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
     },

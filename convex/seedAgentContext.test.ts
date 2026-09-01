@@ -1,13 +1,13 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { CONTEXT_FILE_KEYS } from "./lib/agentContextTemplates";
 
 const modules = import.meta.glob("./**/*.ts");
 
 async function makeBusiness(t: ReturnType<typeof convexTest>, slug: string) {
-  return t.mutation(api.businesses.create, {
+  return t.mutation(internal.businesses.create, {
     name: `Business ${slug}`,
     slug,
     ownerUserId: `user_${slug}`,
@@ -50,7 +50,7 @@ describe("seedAgentContext.seedDefaults", () => {
       provisionedAtIso: "2026-09-01",
     });
 
-    const business = await t.query(api.businesses.getSelf, { businessId });
+    const business = await t.query(internal.businesses.getSelf, { businessId });
     const soul = await t.query(api.agentContextFiles.get, { businessId, fileKey: "SOUL" });
     const businessFile = await t.query(api.agentContextFiles.get, {
       businessId,
