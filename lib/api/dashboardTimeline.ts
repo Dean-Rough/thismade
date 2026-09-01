@@ -1,3 +1,4 @@
+import "server-only";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { getDashboardConvexClient } from "./dashboardConvex";
@@ -15,12 +16,17 @@ export type TimelineSnapshot = {
 // route (app/api/dashboard/timeline/route.ts) — there is no live Convex
 // WS subscription available to the browser (every Convex function is
 // service-secret gated, see convex/lib/serviceAuth.ts, and that secret must
-// never reach client JS), so "live" on this dashboard means "polled".
+// never reach client JS), so "live" on this dashboard means "polled" (every
+// 4s, see components/workspace/workspace-screen.tsx). Events use the
+// bounded listRecentByBusiness, not listByBusiness — a worker run logs
+// several events per step, so an unbounded read here would both re-ship a
+// business's entire history on every poll tick and eventually exceed
+// Convex's per-query read limit outright as history grows.
 export async function fetchTimeline(businessId: Id<"businesses">): Promise<TimelineSnapshot> {
   const client = getDashboardConvexClient();
   const secret = getConvexServiceSecret();
   const [events, tasks] = await Promise.all([
-    client.action(api.agentEventsActions.listByBusiness, { businessId, secret }),
+    client.action(api.agentEventsActions.listRecentByBusiness, { businessId, secret }),
     client.action(api.agentTasksActions.listByBusiness, { businessId, secret }),
   ]);
   return { events, tasks };

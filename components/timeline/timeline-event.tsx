@@ -10,7 +10,13 @@ import { ToolCallCard } from "./cards/tool-call-card";
 import { ToolCallPendingApprovalCard } from "./cards/tool-call-pending-approval-card";
 import { ToolResultCard } from "./cards/tool-result-card";
 import { UnknownEventCard } from "./cards/unknown-event-card";
-import { resolveTimelineCardKind, type AgentEventDoc } from "./timeline-event-kind";
+import {
+  isPendingApprovalLive,
+  resolveTimelineCardKind,
+  type AgentEventDoc,
+} from "./timeline-event-kind";
+
+export type LivePendingApproval = { toolName: string; argsSummary: string };
 
 // The catalogue switch THI-17 asks for: one component per richContent.type,
 // with a visible fallback that never crashes on an unhandled kind. See
@@ -19,10 +25,16 @@ import { resolveTimelineCardKind, type AgentEventDoc } from "./timeline-event-ki
 // match THI-14's originally-planned type names.
 export function TimelineEvent({
   event,
-  pendingTaskIds,
+  pendingApprovals,
 }: {
   event: AgentEventDoc;
-  pendingTaskIds: ReadonlySet<Id<"agentTasks">>;
+  // Keyed by taskId, holding each task's *current* pendingApproval (if any)
+  // — not just which task ids have one. A tool_call_pending_approval event is
+  // an immutable log row and a task can pause more than once over its life
+  // (approve, resume, pause again on a different call), so "is this event
+  // still actionable" has to match the specific call, not just the task id.
+  // See timeline-event-kind.ts's isPendingApprovalLive / THI-89.
+  pendingApprovals: ReadonlyMap<Id<"agentTasks">, LivePendingApproval>;
 }) {
   if (resolveTimelineCardKind(event.event) === "unknown") {
     return <UnknownEventCard event={event} />;
@@ -51,7 +63,7 @@ export function TimelineEvent({
         <ToolCallPendingApprovalCard
           event={event}
           data={data}
-          isStillPending={pendingTaskIds.has(data.taskId)}
+          isStillPending={isPendingApprovalLive(data, pendingApprovals.get(data.taskId))}
         />
       );
     case "tool_call_approval_decision":

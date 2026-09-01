@@ -1,3 +1,4 @@
+import "server-only";
 import { ConvexHttpClient } from "convex/browser";
 
 // Shared by every dashboard-side (internal, session-less) data access

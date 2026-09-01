@@ -1,3 +1,4 @@
+import "server-only";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { getDashboardConvexClient } from "./dashboardConvex";

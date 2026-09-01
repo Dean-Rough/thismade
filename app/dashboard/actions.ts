@@ -34,12 +34,22 @@ export async function resolveApprovalAction(
   decision: "approved" | "denied",
 ): Promise<void> {
   const businessId = await resolveDashboardBusinessId();
-  await resolveToolApproval(businessId, taskId, decision);
+  const result = await resolveToolApproval(businessId, taskId, decision);
+  // resolveToolApproval resolves null on a missing task or (per
+  // convex/agentTasks.ts) an already-resolved approval — the caller must
+  // throw rather than let the button report "Approved"/"Rejected" for a
+  // decision that was never actually recorded.
+  if (!result) {
+    throw new Error("approval_target_not_found_or_already_resolved");
+  }
   revalidateDashboard();
 }
 
 export async function markTaskDoneAction(taskId: Id<"agentTasks">): Promise<void> {
   const businessId = await resolveDashboardBusinessId();
-  await markTaskDone(businessId, taskId);
+  const result = await markTaskDone(businessId, taskId);
+  if (!result) {
+    throw new Error("task_not_found_or_invalid_transition");
+  }
   revalidateDashboard();
 }

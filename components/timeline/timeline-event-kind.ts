@@ -37,3 +37,27 @@ export function resolveTimelineCardKind(event: { kind: string }): TimelineCardKi
 }
 
 export type AgentEventDoc = Doc<"agentEvents">;
+
+// A task can pause on a destructive tool call, get approved, resume, and
+// pause again on a *different* call — each pause appends its own immutable
+// tool_call_pending_approval event (convex/lib/workerLoop.ts logs one per
+// pause; convex/agentTasks.ts's requestToolApproval comments confirm a
+// resumed run can hit a second gate). Matching "is this event's task
+// currently pending" on taskId alone lets a stale event (an earlier,
+// already-resolved pause) render live Confirm/Reject buttons again once the
+// task pauses a second time — approving it would resolve whatever the task's
+// *current* pendingApproval is, not the tool call the card displays. Matching
+// on toolName + argsSummary too closes that: two consecutive pauses on the
+// literal same tool + same summary are the one case this can't distinguish,
+// which is also the one case where approving either reads as the same
+// decision to a human.
+export function isPendingApprovalLive(
+  event: { toolName: string; argsSummary: string },
+  pendingApproval: { toolName: string; argsSummary: string } | undefined,
+): boolean {
+  return (
+    pendingApproval !== undefined &&
+    pendingApproval.toolName === event.toolName &&
+    pendingApproval.argsSummary === event.argsSummary
+  );
+}

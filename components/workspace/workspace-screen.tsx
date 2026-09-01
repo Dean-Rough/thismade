@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Id } from "@/convex/_generated/dataModel";
+import type { LivePendingApproval } from "@/components/timeline/timeline-event";
 import type { AgentEventDoc, AgentTaskDoc } from "@/lib/api/dashboardTimeline";
 import { computeLaunchPlan } from "@/lib/launch-plan";
 import { Composer } from "./composer";
@@ -32,25 +33,26 @@ export function WorkspaceScreen({
   const scrollRef = useRef<HTMLDivElement>(null);
   const wasNearBottomRef = useRef(true);
 
+  const refetch = useCallback(async () => {
+    try {
+      const res = await fetch("/api/dashboard/timeline");
+      if (!res.ok) return;
+      const data: { events: AgentEventDoc[]; tasks: AgentTaskDoc[] } = await res.json();
+      // Only replace state (and re-render/re-trigger auto-scroll) when the
+      // poll actually returned something different — otherwise every 4s tick
+      // would snap a reader back to the bottom even with zero new activity.
+      setEvents((prev) => (JSON.stringify(prev) === JSON.stringify(data.events) ? prev : data.events));
+      setTasks((prev) => (JSON.stringify(prev) === JSON.stringify(data.tasks) ? prev : data.tasks));
+    } catch {
+      // Transient network hiccup — next poll tick retries; the dashboard
+      // has no other liveness signal to fall back to.
+    }
+  }, []);
+
   useEffect(() => {
-    let cancelled = false;
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch("/api/dashboard/timeline");
-        if (!res.ok || cancelled) return;
-        const data: { events: AgentEventDoc[]; tasks: AgentTaskDoc[] } = await res.json();
-        setEvents(data.events);
-        setTasks(data.tasks);
-      } catch {
-        // Transient network hiccup — next poll tick retries; the dashboard
-        // has no other liveness signal to fall back to.
-      }
-    }, POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [businessId]);
+    const interval = setInterval(refetch, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [refetch]);
 
   // Auto-scroll on new events (THI-17), but only if the reader was already
   // near the bottom — otherwise a background event would yank them away
@@ -69,10 +71,21 @@ export function WorkspaceScreen({
       el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_THRESHOLD_PX;
   }
 
-  const pendingTaskIds = useMemo(
-    () => new Set(tasks.filter((t) => t.pendingApproval).map((t) => t._id)),
-    [tasks],
-  );
+  // Keyed by taskId, holding each task's *current* pendingApproval — see
+  // components/timeline/timeline-event-kind.ts's isPendingApprovalLive for
+  // why this can't just be "which task ids have one" (THI-89).
+  const pendingApprovals = useMemo(() => {
+    const map = new Map<Id<"agentTasks">, LivePendingApproval>();
+    for (const task of tasks) {
+      if (task.pendingApproval) {
+        map.set(task._id, {
+          toolName: task.pendingApproval.toolName,
+          argsSummary: task.pendingApproval.argsSummary,
+        });
+      }
+    }
+    return map;
+  }, [tasks]);
 
   const plan = useMemo(
     () =>
@@ -91,13 +104,13 @@ export function WorkspaceScreen({
     <div className="flex h-full">
       <div className="flex min-w-0 flex-1 flex-col">
         <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto">
-          <EventTimeline events={events} pendingTaskIds={pendingTaskIds} />
+          <EventTimeline events={events} pendingApprovals={pendingApprovals} />
         </div>
-        <Composer />
+        <Composer onSent={refetch} />
       </div>
       <div className="flex w-72 shrink-0 flex-col">
         <div className="min-h-0 flex-1">
-          <TaskBoard tasks={tasks} />
+          <TaskBoard tasks={tasks} onChanged={refetch} />
         </div>
         <LaunchPlanWidget plan={plan} />
       </div>

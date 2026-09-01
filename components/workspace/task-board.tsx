@@ -14,8 +14,22 @@ const COLUMNS: { status: AgentTaskDoc["status"]; label: string }[] = [
   { status: "done", label: "Done" },
 ];
 
-function TaskCard({ task }: { task: AgentTaskDoc }) {
+function TaskCard({ task, onChanged }: { task: AgentTaskDoc; onChanged?: () => void }) {
   const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  function handleMarkDone() {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await markTaskDoneAction(task._id);
+        onChanged?.();
+      } catch {
+        setError("Could not mark this task done — try again.");
+      }
+    });
+  }
+
   return (
     <div className="space-y-1.5 rounded-card border border-border bg-surface p-2.5 text-sm">
       <p className="font-medium leading-snug">{task.title}</p>
@@ -30,20 +44,18 @@ function TaskCard({ task }: { task: AgentTaskDoc }) {
         <p className="text-xs font-medium text-confirmation-pending">Awaiting approval</p>
       )}
       {task.status === "needs_review" && !task.circuitBroken && (
-        <Button
-          size="sm"
-          variant="secondary"
-          disabled={isPending}
-          onClick={() => startTransition(() => markTaskDoneAction(task._id))}
-        >
-          Mark done
-        </Button>
+        <>
+          <Button size="sm" variant="secondary" disabled={isPending} onClick={handleMarkDone}>
+            Mark done
+          </Button>
+          {error && <p className="text-xs text-confirmation-rejected">{error}</p>}
+        </>
       )}
     </div>
   );
 }
 
-export function TaskBoard({ tasks }: { tasks: AgentTaskDoc[] }) {
+export function TaskBoard({ tasks, onChanged }: { tasks: AgentTaskDoc[]; onChanged?: () => void }) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -67,7 +79,7 @@ export function TaskBoard({ tasks }: { tasks: AgentTaskDoc[] }) {
                 </p>
                 <div className="space-y-2">
                   {columnTasks.map((task) => (
-                    <TaskCard key={task._id} task={task} />
+                    <TaskCard key={task._id} task={task} onChanged={onChanged} />
                   ))}
                 </div>
               </div>

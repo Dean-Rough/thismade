@@ -89,6 +89,27 @@ export const listByBusiness = internalQuery({
   },
 });
 
+// THI-17: the dashboard's timeline polls this on every tick, and a worker
+// run logs several events per step (tool_call/tool_result/file_diff/...) —
+// unlike listByBusiness's one-off callers, an unbounded .collect() here both
+// re-ships the entire history every few seconds and eventually exceeds
+// Convex's per-query read limit outright as a business's history grows.
+// Returned oldest-first (the dashboard renders newest at the bottom), same
+// order as listByBusiness/listByTask.
+const DEFAULT_RECENT_LIMIT = 200;
+
+export const listRecentByBusiness = internalQuery({
+  args: { businessId: v.id("businesses"), limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const events = await ctx.db
+      .query("agentEvents")
+      .withIndex("by_business", (q) => q.eq("businessId", args.businessId))
+      .order("desc")
+      .take(args.limit ?? DEFAULT_RECENT_LIMIT);
+    return events.reverse();
+  },
+});
+
 // Cross-tenant tasks resolve as "no events" rather than an error — the same
 // 404-shaped silence as getScoped, just expressed as an empty list since
 // this is a list endpoint.

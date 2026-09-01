@@ -1,14 +1,14 @@
 import type { Id } from "@/convex/_generated/dataModel";
-import { TimelineEvent } from "@/components/timeline/timeline-event";
+import { TimelineEvent, type LivePendingApproval } from "@/components/timeline/timeline-event";
 import type { AgentEventDoc } from "@/lib/api/dashboardTimeline";
 import { groupByDay } from "./group-by-day";
 
 export function EventTimeline({
   events,
-  pendingTaskIds,
+  pendingApprovals,
 }: {
   events: AgentEventDoc[];
-  pendingTaskIds: ReadonlySet<Id<"agentTasks">>;
+  pendingApprovals: ReadonlyMap<Id<"agentTasks">, LivePendingApproval>;
 }) {
   if (events.length === 0) {
     return (
@@ -32,7 +32,7 @@ export function EventTimeline({
           </div>
           <div className="space-y-2">
             {group.items.map((event) => (
-              <TimelineEvent key={event._id} event={event} pendingTaskIds={pendingTaskIds} />
+              <TimelineEvent key={event._id} event={event} pendingApprovals={pendingApprovals} />
             ))}
           </div>
         </div>
