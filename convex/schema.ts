@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { richContentEvent } from "./lib/richContent";
 
 export default defineSchema({
   // Tenant root. Not itself businessId-scoped — it IS the tenant.
@@ -110,4 +111,108 @@ export default defineSchema({
     // timeout, or a manual resend) must not create a second order — see
     // orders.createFromCheckoutSession's check-then-insert against this index.
     .index("by_stripe_session", ["stripeCheckoutSessionId"]),
+
+  // Phase 3 (agent core, THI-8): CEO->worker kanban board. Lifecycle is
+  // strictly todo -> in_progress -> needs_review -> done; see
+  // convex/agentTasks.ts advanceStatus for the allowed-transition table.
+  agentTasks: defineTable({
+    businessId: v.id("businesses"),
+    title: v.string(),
+    description: v.string(),
+    workerType: v.union(
+      v.literal("coding"),
+      v.literal("browser"),
+      v.literal("marketing"),
+    ),
+    status: v.union(
+      v.literal("todo"),
+      v.literal("in_progress"),
+      v.literal("needs_review"),
+      v.literal("done"),
+    ),
+    // Caller-supplied stable key for the CEO's dispatch decision (e.g. a hash
+    // of businessId + the planning turn that produced this task). Dispatch
+    // retries (reconnect, crash) replay the same key instead of double
+    // creating the task — see agentTasks.dispatch.
+    dispatchKey: v.string(),
+    // Credit-gated at dispatch time (creditLedger.spend, keyed on
+    // dispatchKey) — see agentTasks.dispatch. Stored on the row too so the
+    // board can render "this task cost N credits" without a ledger join.
+    creditCost: v.number(),
+    attemptCount: v.number(),
+    maxAttempts: v.number(),
+    // Circuit breaker: set once attemptCount reaches maxAttempts on the same
+    // failure. A circuit-broken task must surface for owner/CEO attention,
+    // never silently retry again.
+    circuitBroken: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_business", ["businessId"])
+    .index("by_business_status", ["businessId", "status"])
+    .index("by_dispatch_key", ["dispatchKey"]),
+
+  // Phase 3: the typed richContent timeline every UI surface (chat, kanban
+  // card detail, audit log) reads from instead of free-text logs.
+  agentEvents: defineTable({
+    businessId: v.id("businesses"),
+    taskId: v.optional(v.id("agentTasks")),
+    actor: v.union(
+      v.literal("owner"),
+      v.literal("ceo"),
+      v.literal("worker"),
+      v.literal("system"),
+    ),
+    event: richContentEvent,
+    createdAt: v.number(),
+  })
+    .index("by_business", ["businessId"])
+    .index("by_task", ["taskId"]),
+
+  // Phase 3: running per-business credit balance. Every agent-authored write
+  // must pass creditLedger.spend (check-then-debit in one transaction)
+  // *before* the write it's paying for lands — see creditLedger.spend.
+  creditBalances: defineTable({
+    businessId: v.id("businesses"),
+    balance: v.number(),
+    updatedAt: v.number(),
+  }).index("by_business", ["businessId"]),
+
+  // Append-only audit trail behind creditBalances. idempotencyKey lets a
+  // dispatcher retry replay the same spend instead of double-debiting, the
+  // same check-then-insert idiom as idempotencyKeys/orders.
+  creditTransactions: defineTable({
+    businessId: v.id("businesses"),
+    amount: v.number(), // negative = debit, positive = grant/refund
+    balanceAfter: v.number(),
+    reason: v.string(),
+    taskId: v.optional(v.id("agentTasks")),
+    idempotencyKey: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_business", ["businessId"])
+    .index("by_business_idempotency_key", ["businessId", "idempotencyKey"]),
+
+  // Phase 3: canonical per-business agent context files (SOUL/OWNER/BUSINESS/
+  // PLATFORM/PLAYBOOK/RUNBOOK/MEMORY/CODE_MAP). This table is the storage
+  // layer only — the generated *content* templates are a separate,
+  // Security & Compliance Reviewer-gated workstream (see THI-8 child issues);
+  // no template text lives here yet.
+  agentContextFiles: defineTable({
+    businessId: v.id("businesses"),
+    fileKey: v.union(
+      v.literal("SOUL"),
+      v.literal("OWNER"),
+      v.literal("BUSINESS"),
+      v.literal("PLATFORM"),
+      v.literal("PLAYBOOK"),
+      v.literal("RUNBOOK"),
+      v.literal("MEMORY"),
+      v.literal("CODE_MAP"),
+    ),
+    content: v.string(),
+    updatedAt: v.number(),
+  })
+    .index("by_business", ["businessId"])
+    .index("by_business_file_key", ["businessId", "fileKey"]),
 });
