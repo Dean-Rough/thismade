@@ -188,8 +188,20 @@ describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
 
   it("wires up host-resolver-rules pinning and a bounded redirect-hop loop", () => {
     expect(BROWSER_DRIVER_SCRIPT).toContain("--host-resolver-rules=");
-    expect(BROWSER_DRIVER_SCRIPT).toContain("page.route(");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("context.route(");
     expect(BROWSER_DRIVER_SCRIPT).toContain("isNavigationRequest");
     expect(BROWSER_DRIVER_SCRIPT).toContain("MAX_REDIRECT_HOPS");
+  });
+
+  // THI-72 follow-up: page.route() never sees WebSocket connections or
+  // window.open() popups, so a scraped/prompt-injected page's own JS could
+  // reach an internal/metadata host through either primitive without ever
+  // touching the pinning/validation logic above. Asserting the driver source
+  // wires up the context-level guards is the same "catch a future regression
+  // in the shipped text" pattern as the pinning assertion above.
+  it("closes popups, blocks WebSocket connections, and disables service workers", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain("context.on(\"page\"");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("routeWebSocket(");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("serviceWorkers: \"block\"");
   });
 });

@@ -467,11 +467,22 @@ async function pinHostname(hostname, existingRules) {
 // --host-resolver-rules set whenever the navigation (the initial load, or a
 // same-call redirect it follows) reaches a hostname not yet pinned. Every
 // request the page makes - not just the top-level navigation - is checked
-// through the same page.route() interceptor before Chromium is allowed to
+// through the same context.route() interceptor before Chromium is allowed to
 // touch it, so a redirect or a subresource load can't reach an unpinned host
 // unchecked. THI-72: this is what ties the IP validated at resolve time to
 // the IP actually connected to, for every hop, instead of validating one URL
 // up front and then trusting whatever the browser's own resolver does next.
+//
+// THI-72 follow-up: page.route() only ever covers the single page it's
+// registered on, and Playwright never routes WebSocket connections through
+// it at all - so a scraped/prompt-injected page's own JS could previously
+// reach an unpinned/unvalidated host via window.open(...) (a second,
+// unrouted page) or new WebSocket(...) with zero DNS pinning. Registering
+// on the context instead of the page covers every page the context ever
+// creates (including popups), closing spawned popups outright removes the
+// unrouted-second-page window entirely, and routeWebSocket()/blocking
+// service workers closes the other two request paths context.route() still
+// can't see.
 async function navigateWithPinning(targetUrl, rules) {
   let currentRules = rules.slice();
   let pendingUrl = targetUrl;
@@ -483,9 +494,14 @@ async function navigateWithPinning(targetUrl, rules) {
     const browser = await chromium.launch(
       currentRules.length ? { args: ["--host-resolver-rules=" + currentRules.join(",")] } : {},
     );
-    const page = await browser.newPage();
+    const context = await browser.newContext({ serviceWorkers: "block" });
+    context.on("page", (extraPage) => {
+      extraPage.close().catch(() => {});
+    });
+    await context.routeWebSocket("**/*", (route) => route.close());
+    const page = await context.newPage();
     let redirectTarget = null;
-    await page.route("**/*", async (route) => {
+    await context.route("**/*", async (route) => {
       const reqUrl = route.request().url();
       let reqHostname;
       try {
