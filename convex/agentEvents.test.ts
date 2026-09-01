@@ -117,6 +117,46 @@ describe("agentEvents: logWorkerEvent (THI-68 identity boundary)", () => {
   });
 });
 
+describe("agentEvents: listRecentByBusiness (THI-17)", () => {
+  it("returns at most `limit` events, oldest-first, most-recent within the window", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "recent-events");
+
+    for (let i = 0; i < 5; i++) {
+      await t.mutation(internal.agentEvents.sendChatMessage, {
+        businessId,
+        authorRole: "owner",
+        text: `message ${i}`,
+      });
+    }
+
+    const recent = await t.query(internal.agentEvents.listRecentByBusiness, {
+      businessId,
+      limit: 3,
+    });
+    expect(recent).toHaveLength(3);
+    expect(recent.map((e) => (e.event.kind === "chat_message" ? e.event.text : null))).toEqual([
+      "message 2",
+      "message 3",
+      "message 4",
+    ]);
+  });
+
+  it("keeps events scoped to their own business", async () => {
+    const t = convexTest(schema, modules);
+    const businessAId = await makeBusiness(t, "recent-events-tenancy-a");
+    const businessBId = await makeBusiness(t, "recent-events-tenancy-b");
+
+    await t.mutation(internal.agentEvents.sendChatMessage, {
+      businessId: businessAId,
+      authorRole: "owner",
+      text: "A's message",
+    });
+
+    expect(await t.query(internal.agentEvents.listRecentByBusiness, { businessId: businessBId })).toHaveLength(0);
+  });
+});
+
 describe("agentEvents: chat text hardening (THI-62)", () => {
   it("rejects an empty chat message", async () => {
     const t = convexTest(schema, modules);

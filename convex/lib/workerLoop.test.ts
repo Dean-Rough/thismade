@@ -183,6 +183,15 @@ describe("runWorkerLoop", () => {
       },
     });
     expect(events.map((e) => e.kind)).toEqual(["tool_call", "tool_call_pending_approval"]);
+    // THI-91: the emitted event itself carries argsHash — this is what lets
+    // convex/workerRunner.ts's toRichContentEvent put it on the
+    // tool_call_pending_approval richContent row, and ultimately what a
+    // dashboard caller threads back as resolveToolApproval's
+    // expectedArgsHash.
+    const pendingEvent = events.find((e) => e.kind === "tool_call_pending_approval");
+    expect(pendingEvent?.kind === "tool_call_pending_approval" && pendingEvent.argsHash).toBe(
+      hashToolArgs({ command: "rm -rf node_modules" }),
+    );
     // The gate returns before executeTool ever runs — no shell command
     // reaches the sandbox.
     expect(sandbox.commands).toHaveLength(0);

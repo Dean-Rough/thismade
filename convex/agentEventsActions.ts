@@ -39,3 +39,11 @@ export const listByTask = action({
     return ctx.runQuery(internal.agentEvents.listByTask, args);
   },
 });
+
+export const listRecentByBusiness = action({
+  args: { businessId: v.id("businesses"), limit: v.optional(v.number()), secret: v.string() },
+  handler: async (ctx, { secret, ...args }): Promise<Doc<"agentEvents">[]> => {
+    assertServiceSecret(secret);
+    return ctx.runQuery(internal.agentEvents.listRecentByBusiness, args);
+  },
+});
