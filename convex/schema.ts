@@ -165,6 +165,18 @@ export default defineSchema({
         requestedAt: v.number(),
       }),
     ),
+    // THI-73 Finding 2: the atomic claim beginResumedWorkerRun stamps before
+    // a resumed run (post-approval) starts executing, mirroring how the
+    // todo -> in_progress transition itself is beginWorkerRun's claim for a
+    // fresh dispatch. Status alone can't serve that role here because it
+    // stays "in_progress" across an entire pause/resume cycle — without this,
+    // a duplicate resumeWorkerTask schedule (redelivery, a future caller
+    // mistake) could pass a read-only precondition check twice and run two
+    // sandboxes against the same task. Cleared by requestToolApproval (a
+    // resumed run that pauses again on a second destructive call must let a
+    // later approval claim again) and recordAttemptFailure (same reasoning
+    // for a future retry path).
+    resumeClaimedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })

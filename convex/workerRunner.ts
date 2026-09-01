@@ -48,7 +48,7 @@ function toRichContentEvent(taskId: Id<"agentTasks">, event: WorkerLoopEvent) {
 async function performWorkerRun(
   ctx: ActionCtx,
   args: { businessId: Id<"businesses">; taskId: Id<"agentTasks"> },
-  opts: { approvedToolName?: string },
+  opts: { approvedToolName?: string; approvedArgsSummary?: string },
 ): Promise<void> {
   const task = await ctx.runQuery(internal.agentTasks.getScopedById, args);
   if (!task) {
@@ -102,7 +102,15 @@ async function performWorkerRun(
           return file ? file.content : null;
         },
       },
-      approvedToolName: opts.approvedToolName,
+      // THI-73 Finding 1: only forms a grant when both toolName and
+      // argsSummary are present — a name with no matching approved args
+      // (shouldn't happen given how resolveToolApproval schedules this, but
+      // fail closed rather than assume) yields no grant at all, so the gate
+      // pauses again instead of treating a partial value as a free pass.
+      approvedCall:
+        opts.approvedToolName !== undefined && opts.approvedArgsSummary !== undefined
+          ? { toolName: opts.approvedToolName, argsSummary: opts.approvedArgsSummary }
+          : undefined,
       onEvent,
     });
 
@@ -190,17 +198,21 @@ export const resumeWorkerTask = internalAction({
     businessId: v.id("businesses"),
     taskId: v.id("agentTasks"),
     approvedToolName: v.string(),
+    approvedArgsSummary: v.string(),
   },
-  handler: async (ctx, { approvedToolName, ...args }) => {
+  handler: async (ctx, { approvedToolName, approvedArgsSummary, ...args }) => {
     // Idempotent-dispatch guard, mirroring runWorkerTask's beginWorkerRun
-    // check: resolveToolApproval already clears pendingApproval in the same
-    // mutation that schedules this action, so a genuine duplicate schedule
-    // finds it already gone (or the task already moved on) and no-ops
-    // rather than running the worker loop a second time.
-    const task = await ctx.runQuery(internal.agentTasks.getScopedById, args);
-    if (!task || task.status !== "in_progress" || task.pendingApproval) {
+    // check: beginResumedWorkerRun (THI-73 Finding 2) atomically claims this
+    // resume via resumeClaimedAt, the same throw-on-second-caller pattern
+    // beginWorkerRun uses via the todo -> in_progress transition. A genuine
+    // duplicate schedule (scheduler redelivery, a future caller mistake)
+    // loses that claim and no-ops rather than running the worker loop a
+    // second time against the same task.
+    try {
+      await ctx.runMutation(internal.agentTasks.beginResumedWorkerRun, args);
+    } catch {
       return;
     }
-    await performWorkerRun(ctx, args, { approvedToolName });
+    await performWorkerRun(ctx, args, { approvedToolName, approvedArgsSummary });
   },
 });

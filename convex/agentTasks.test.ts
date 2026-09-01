@@ -983,3 +983,141 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
     ).rejects.toThrow("no_pending_approval");
   });
 });
+
+describe("agentTasks: resumed-run atomic claim (THI-73 Finding 2)", () => {
+  // Same reason as the THI-66 describe block above: one test here drives
+  // resolveToolApproval's "approved" branch, which schedules
+  // workerRunner.resumeWorkerTask via ctx.scheduler.runAfter(0, …) — a
+  // real "use node" action needing live E2B/LLM credentials. Fake timers
+  // keep that scheduled call inert for the rest of this suite.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function makeInProgressTask(t: ReturnType<typeof convexTest>, slug: string) {
+    const businessId = await makeBusiness(t, slug);
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: `${slug}:task-1`,
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+    });
+    await t.mutation(internal.agentTasks.beginWorkerRun, { businessId, taskId: task!._id });
+    return { businessId, taskId: task!._id };
+  }
+
+  it("beginResumedWorkerRun claims an in_progress task with no pendingApproval and stamps resumeClaimedAt", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeInProgressTask(t, "resume-claim-a");
+
+    const result = await t.mutation(internal.agentTasks.beginResumedWorkerRun, { businessId, taskId });
+
+    expect(result?.status).toBe("in_progress");
+    expect(result?.resumeClaimedAt).toBeTypeOf("number");
+  });
+
+  it("beginResumedWorkerRun is a no-op-safe guard: a second concurrent claim on the same task rejects instead of double-running it", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeInProgressTask(t, "resume-claim-b");
+
+    await t.mutation(internal.agentTasks.beginResumedWorkerRun, { businessId, taskId });
+
+    await expect(
+      t.mutation(internal.agentTasks.beginResumedWorkerRun, { businessId, taskId }),
+    ).rejects.toThrow("resume_already_claimed");
+  });
+
+  it("beginResumedWorkerRun rejects a task that is not in_progress", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "resume-claim-c");
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: "resume-claim-c:task-1",
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+    });
+
+    await expect(
+      t.mutation(internal.agentTasks.beginResumedWorkerRun, { businessId, taskId: task!._id }),
+    ).rejects.toThrow("invalid_resume_claim_status:todo");
+  });
+
+  it("beginResumedWorkerRun rejects a task with a pendingApproval still set", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeInProgressTask(t, "resume-claim-d");
+    await t.mutation(internal.agentTasks.requestToolApproval, {
+      businessId,
+      taskId,
+      toolName: "run_shell",
+      argsSummary: "{}",
+    });
+
+    await expect(
+      t.mutation(internal.agentTasks.beginResumedWorkerRun, { businessId, taskId }),
+    ).rejects.toThrow("invalid_resume_claim_status:in_progress");
+  });
+
+  it("beginResumedWorkerRun respects the circuit breaker", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "resume-claim-e");
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Flaky task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: "resume-claim-e:task-1",
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+      maxAttempts: 1,
+    });
+    await t.mutation(internal.agentTasks.beginWorkerRun, { businessId, taskId: task!._id });
+    await t.mutation(internal.agentTasks.recordAttemptFailure, {
+      businessId,
+      taskId: task!._id,
+      errorMessage: "boom",
+    });
+
+    await expect(
+      t.mutation(internal.agentTasks.beginResumedWorkerRun, { businessId, taskId: task!._id }),
+    ).rejects.toThrow("task_circuit_broken");
+  });
+
+  it("requestToolApproval clears a prior resume claim so a later approval can claim the next resume", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeInProgressTask(t, "resume-claim-f");
+    await t.mutation(internal.agentTasks.beginResumedWorkerRun, { businessId, taskId });
+
+    // The resumed run itself hits a second destructive call and pauses
+    // again — this is the same requestToolApproval a fresh run's first
+    // pause uses.
+    await t.mutation(internal.agentTasks.requestToolApproval, {
+      businessId,
+      taskId,
+      toolName: "run_shell",
+      argsSummary: '{"command":"npm publish"}',
+    });
+    await t.mutation(internal.agentTasks.resolveToolApproval, {
+      businessId,
+      taskId,
+      actor: "owner",
+      decision: "approved",
+    });
+
+    // Without the clear, this would still throw resume_already_claimed even
+    // though the prior resumed run has long since paused and handed off.
+    const result = await t.mutation(internal.agentTasks.beginResumedWorkerRun, { businessId, taskId });
+    expect(result?.status).toBe("in_progress");
+  });
+});

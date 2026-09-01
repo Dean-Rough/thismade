@@ -51,15 +51,23 @@ export interface WorkerLoopOptions {
   maxDurationMs?: number;
   onEvent: (event: WorkerLoopEvent) => Promise<void> | void;
   now?: () => number;
-  // THI-66: a single-use grant for one destructive call of this toolName,
-  // set only by convex/workerRunner.ts's resumeWorkerTask after an
-  // owner/CEO approves a pending call. No conversation or sandbox state
-  // survives the pause (see resumeWorkerTask's own comment for why) — a
-  // resumed run replays `instructions` from scratch, so this grant is what
-  // lets the model's retraced destructive call actually execute instead of
-  // pausing again. Consumed on first match; a second destructive call later
-  // in the same resumed run still gates normally.
-  approvedToolName?: string;
+  // THI-66: a single-use grant for one destructive call, set only by
+  // convex/workerRunner.ts's resumeWorkerTask after an owner/CEO approves a
+  // pending call. No conversation or sandbox state survives the pause (see
+  // resumeWorkerTask's own comment for why) — a resumed run replays
+  // `instructions` from scratch, so this grant is what lets the model's
+  // retraced destructive call actually execute instead of pausing again.
+  //
+  // THI-73 Finding 1: bound to the exact argsSummary the human reviewed, not
+  // just the tool name. A resumed run is a fresh LLM conversation — nothing
+  // guarantees its first destructive call reproduces the same arguments the
+  // owner/CEO actually approved (prompt injection in `instructions`, or
+  // ordinary sampling variance, could steer it to something else with the
+  // same tool name). Matching on name alone would let that call execute
+  // unreviewed; comparing argsSummary too closes that gap. Consumed on first
+  // match; a second destructive call later in the same resumed run — even a
+  // matching one — still gates normally.
+  approvedCall?: { toolName: string; argsSummary: string };
 }
 
 const DEFAULT_MAX_TURNS = 20;
@@ -85,11 +93,11 @@ export async function runWorkerLoop(opts: WorkerLoopOptions): Promise<WorkerLoop
   const startedAt = now();
   const tools = toolsForWorkerType(opts.workerType);
   const messages: LlmMessage[] = [{ role: "user", content: opts.instructions }];
-  // Single-use grant (see WorkerLoopOptions.approvedToolName) — cleared the
+  // Single-use grant (see WorkerLoopOptions.approvedCall) — cleared the
   // first time it's actually consumed so a second destructive call later in
   // this same run still gates normally rather than getting a free pass for
   // the rest of the task.
-  let approvedToolName = opts.approvedToolName;
+  let approvedCall = opts.approvedCall;
 
   for (let turn = 0; turn < maxTurns; turn++) {
     if (now() - startedAt > maxDurationMs) {
@@ -120,14 +128,25 @@ export async function runWorkerLoop(opts: WorkerLoopOptions): Promise<WorkerLoop
       // both registered for this workerType (an unregistered/hallucinated
       // tool name still falls through to the ordinary
       // assertToolAllowed/ToolNotAllowedError path below) and classified
-      // destructive — and only when it isn't the single-use grant this run
-      // was resumed with. The gate returns immediately: no tool_result is
-      // logged for a call that never ran, and the loop ends here rather
-      // than continuing to whatever the model proposes next.
+      // destructive — and only when it doesn't match the single-use grant
+      // this run was resumed with. The gate returns immediately: no
+      // tool_result is logged for a call that never ran, and the loop ends
+      // here rather than continuing to whatever the model proposes next.
+      //
+      // THI-73 Finding 1: the match is on toolName AND argsSummary, not
+      // toolName alone — see WorkerLoopOptions.approvedCall for why a
+      // name-only match would let an unreviewed call through. A grant whose
+      // args don't match what's about to execute is treated as no grant at
+      // all: fail closed into a fresh pending-approval pause rather than
+      // silently running.
       const isRegistered = tools.some((tool) => tool.name === call.toolName);
       if (isRegistered && isDestructiveToolCall(opts.workerType, call.toolName)) {
-        if (call.toolName === approvedToolName) {
-          approvedToolName = undefined;
+        if (
+          approvedCall &&
+          call.toolName === approvedCall.toolName &&
+          argsSummary === approvedCall.argsSummary
+        ) {
+          approvedCall = undefined;
         } else {
           await opts.onEvent({ kind: "tool_call_pending_approval", toolName: call.toolName, argsSummary });
           return {
