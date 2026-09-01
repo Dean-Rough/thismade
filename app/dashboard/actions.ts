@@ -82,7 +82,10 @@ export async function markTaskDoneAction(taskId: Id<"agentTasks">): Promise<void
 export async function addDomainAction(hostname: string): Promise<{ records: DnsRecord[] }> {
   await assertDashboardAccess();
   const trimmed = hostname.trim().toLowerCase();
-  if (!HOSTNAME_PATTERN.test(trimmed)) {
+  // RFC 1123 caps a full hostname at 253 octets — HOSTNAME_PATTERN only
+  // bounds each individual label (1-63 chars), not the total, so an
+  // unbounded number of short labels would otherwise pass.
+  if (trimmed.length > 253 || !HOSTNAME_PATTERN.test(trimmed)) {
     throw new Error("invalid_hostname");
   }
   const businessId = await resolveDashboardBusinessId();

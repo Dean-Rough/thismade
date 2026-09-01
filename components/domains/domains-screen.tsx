@@ -45,14 +45,17 @@ function StatusPill({ status }: { status: Domain["status"] }) {
 function DomainRow({ domain }: { domain: Domain }) {
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [current, setCurrent] = useState(domain);
 
+  // No local copy of `domain` — verifyDomainAction's revalidatePath causes
+  // the parent Server Component to refetch and pass a fresh prop down once
+  // the transition resolves, so this row is a pure function of that prop
+  // rather than a stale local snapshot that a sibling row's action wouldn't
+  // otherwise refresh.
   function handleVerify() {
     setError(null);
     startTransition(async () => {
       try {
-        const updated = await verifyDomainAction(current.id);
-        setCurrent(updated);
+        await verifyDomainAction(domain.id);
       } catch (err) {
         setError(errorMessage(err, "Could not verify that domain — try again."));
       }
@@ -63,8 +66,8 @@ function DomainRow({ domain }: { domain: Domain }) {
     <div className="rounded-card border border-border bg-surface-raised p-3">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate font-mono text-sm text-ink">{current.hostname}</p>
-          <StatusPill status={current.status} />
+          <p className="truncate font-mono text-sm text-ink">{domain.hostname}</p>
+          <StatusPill status={domain.status} />
         </div>
         <Button
           size="sm"
@@ -81,20 +84,24 @@ function DomainRow({ domain }: { domain: Domain }) {
 }
 
 function DnsRecordsTable({ records }: { records: DnsRecord[] }) {
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [feedback, setFeedback] = useState<{ index: number; ok: boolean } | null>(null);
 
   function handleCopy(value: string, index: number) {
-    navigator.clipboard.writeText(value).then(() => {
-      setCopiedIndex(index);
-      setTimeout(() => setCopiedIndex((prev) => (prev === index ? null : prev)), 1500);
-    });
+    navigator.clipboard.writeText(value).then(
+      () => setFeedback({ index, ok: true }),
+      () => setFeedback({ index, ok: false }),
+    );
+    setTimeout(() => setFeedback((prev) => (prev?.index === index ? null : prev)), 1500);
   }
 
   return (
     <div className="mt-3 space-y-1.5 rounded-card border border-border bg-surface p-3">
       <p className="text-xs font-medium text-ink-muted">Add these records at your registrar</p>
       {records.map((record, index) => (
-        <div key={`${record.type}-${record.host}`} className="flex items-center gap-2 font-mono text-xs">
+        // Records are a static, non-reorderable snapshot from a single
+        // addDomainAction result, so the array index is a stable key —
+        // type+host isn't unique (e.g. two TXT records at the same host).
+        <div key={index} className="flex items-center gap-2 font-mono text-xs">
           <span className="w-12 shrink-0 text-ink-muted">{record.type}</span>
           <span className="min-w-0 flex-1 truncate text-ink">{record.host}</span>
           <span className="min-w-0 flex-1 truncate text-ink">{record.value}</span>
@@ -106,7 +113,11 @@ function DnsRecordsTable({ records }: { records: DnsRecord[] }) {
           >
             <Copy className="size-3.5" />
           </button>
-          {copiedIndex === index && <span className="shrink-0 text-ink-muted">Copied</span>}
+          {feedback?.index === index && (
+            <span className={cn("shrink-0", feedback.ok ? "text-ink-muted" : "text-confirmation-rejected")}>
+              {feedback.ok ? "Copied" : "Copy failed"}
+            </span>
+          )}
         </div>
       ))}
     </div>
@@ -132,9 +143,27 @@ function AddDomainForm() {
     });
   }
 
+  // Reset every time the disclosure opens or closes — otherwise adding
+  // domain A, cancelling or finishing, then reopening to add domain B shows
+  // domain A's stale hostname/records/error underneath what looks like a
+  // fresh form.
+  function handleOpen() {
+    setHostname("");
+    setError(null);
+    setRecords(null);
+    setOpen(true);
+  }
+
+  function handleCancel() {
+    setHostname("");
+    setError(null);
+    setRecords(null);
+    setOpen(false);
+  }
+
   if (!open) {
     return (
-      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+      <Button variant="outline" size="sm" onClick={handleOpen}>
         <Plus /> Add domain
       </Button>
     );
@@ -158,7 +187,7 @@ function AddDomainForm() {
         <Button size="sm" disabled={isPending || !hostname.trim()} onClick={handleSubmit}>
           {isPending ? "Adding…" : "Add"}
         </Button>
-        <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
+        <Button size="sm" variant="ghost" onClick={handleCancel}>
           Cancel
         </Button>
       </div>
