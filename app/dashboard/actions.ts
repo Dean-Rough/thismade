@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import type { Id } from "@/convex/_generated/dataModel";
 import { resolveDashboardBusinessId } from "@/lib/api/dashboardBusiness";
 import { markTaskDone, resolveToolApproval, sendChatMessage } from "@/lib/api/dashboardTimeline";
+import { assertDashboardAccess } from "@/lib/assertDashboardAccess";
 
 // Every action here resolves its own businessId server-side and revalidates
 // every dashboard route that reads timeline/task data — cheap given this is
@@ -15,6 +16,7 @@ function revalidateDashboard() {
 }
 
 export async function sendChatMessageAction(text: string): Promise<void> {
+  await assertDashboardAccess();
   const trimmed = text.trim();
   if (!trimmed) {
     return;
@@ -41,6 +43,7 @@ export async function resolveApprovalAction(
   decision: "approved" | "denied",
   argsHash: string,
 ): Promise<void> {
+  await assertDashboardAccess();
   const businessId = await resolveDashboardBusinessId();
   const result = await resolveToolApproval(businessId, taskId, decision, argsHash);
   // resolveToolApproval resolves null on a missing task or (per
@@ -56,6 +59,7 @@ export async function resolveApprovalAction(
 }
 
 export async function markTaskDoneAction(taskId: Id<"agentTasks">): Promise<void> {
+  await assertDashboardAccess();
   const businessId = await resolveDashboardBusinessId();
   const result = await markTaskDone(businessId, taskId);
   if (!result) {
