@@ -22,7 +22,7 @@ export const record = action({
     secret: v.string(),
   },
   handler: async (ctx, { secret, ...args }): Promise<Id<"fulfillmentEvents">> => {
-    assertServiceSecret(secret);
+    await assertServiceSecret(secret);
     return ctx.runMutation(internal.fulfillmentEvents.record, args);
   },
 });
@@ -30,7 +30,7 @@ export const record = action({
 export const list = action({
   args: { secret: v.string() },
   handler: async (ctx, { secret }): Promise<Doc<"fulfillmentEvents">[]> => {
-    assertServiceSecret(secret);
+    await assertServiceSecret(secret);
     return ctx.runQuery(internal.fulfillmentEvents.list, {});
   },
 });
