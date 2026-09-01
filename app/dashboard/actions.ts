@@ -29,16 +29,26 @@ export async function sendChatMessageAction(text: string): Promise<void> {
 // component, two entry points, do not fork the logic") — both call this
 // same action, which itself calls the one underlying Convex mutation
 // (agentTasks.resolveToolApproval).
+//
+// THI-91: argsHash is the caller's proof that it's resolving the exact
+// pending call it displayed, not just whatever the task's current
+// pendingApproval happens to be — see agentTasks.resolveToolApproval's own
+// comment. Both call sites read it off their own data (the timeline event's
+// argsHash, or the task's live pendingApproval.argsHash), never off a value
+// this action invents.
 export async function resolveApprovalAction(
   taskId: Id<"agentTasks">,
   decision: "approved" | "denied",
+  argsHash: string,
 ): Promise<void> {
   const businessId = await resolveDashboardBusinessId();
-  const result = await resolveToolApproval(businessId, taskId, decision);
+  const result = await resolveToolApproval(businessId, taskId, decision, argsHash);
   // resolveToolApproval resolves null on a missing task or (per
   // convex/agentTasks.ts) an already-resolved approval — the caller must
   // throw rather than let the button report "Approved"/"Rejected" for a
-  // decision that was never actually recorded.
+  // decision that was never actually recorded. A stale/mismatched argsHash
+  // throws approval_argshash_mismatch instead of resolving null, which
+  // surfaces the same way to the button below.
   if (!result) {
     throw new Error("approval_target_not_found_or_already_resolved");
   }

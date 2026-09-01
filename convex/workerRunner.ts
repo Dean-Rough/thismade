@@ -35,6 +35,7 @@ function toRichContentEvent(taskId: Id<"agentTasks">, event: WorkerLoopEvent) {
         taskId,
         toolName: event.toolName,
         argsSummary: event.argsSummary,
+        argsHash: event.argsHash,
       };
   }
 }

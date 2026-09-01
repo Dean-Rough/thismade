@@ -74,11 +74,20 @@ export const errorEvent = v.object({
 // call (see workerTools.ts's isDestructiveToolCall) — distinct from
 // errorEvent so a gated call reads on the timeline as "waiting for a
 // decision," not as a failure.
+//
+// THI-91: argsHash carries the same full-fidelity binding
+// convex/lib/workerLoop.ts's hashToolArgs computes for task.pendingApproval,
+// so a UI caller resolving this exact event can prove to
+// agentTasks.resolveToolApproval that it's deciding the call this card
+// displays — not just whatever the task's current live pendingApproval
+// happens to be (toolName + argsSummary text can collide between two
+// distinct pending calls; this can't).
 export const toolCallPendingApprovalEvent = v.object({
   kind: v.literal("tool_call_pending_approval"),
   taskId: v.id("agentTasks"),
   toolName: v.string(),
   argsSummary: v.string(),
+  argsHash: v.string(),
 });
 
 // THI-66: the owner/CEO's decision on a tool_call_pending_approval event —

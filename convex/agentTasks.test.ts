@@ -894,6 +894,7 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
         taskId,
         actor: "owner",
         decision: "approved",
+        expectedArgsHash: "hash-irrelevant",
       }),
     ).rejects.toThrow("no_pending_approval");
   });
@@ -914,6 +915,7 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
       taskId,
       actor: "owner",
       decision: "approved",
+      expectedArgsHash: "hash-npm-publish",
     });
 
     expect(result?.status).toBe("in_progress");
@@ -928,6 +930,37 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
     expect(decision?.event.kind === "tool_call_approval_decision" && decision.event.toolName).toBe(
       "run_shell",
     );
+  });
+
+  // THI-91: the confused-deputy binding — a caller resolving with the wrong
+  // argsHash (a stale UI card, or a second distinct pending call that
+  // happens to share toolName/argsSummary text) must not have its decision
+  // applied to whatever this task's *current* pendingApproval actually is.
+  it("resolveToolApproval throws approval_argshash_mismatch and leaves pendingApproval untouched when expectedArgsHash doesn't match", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeInProgressTask(t, "approval-mismatch-a");
+    await t.mutation(internal.agentTasks.requestToolApproval, {
+      businessId,
+      taskId,
+      toolName: "run_shell",
+      argsSummary: '{"command":"npm publish"}',
+      argsHash: "hash-npm-publish",
+    });
+
+    await expect(
+      t.mutation(internal.agentTasks.resolveToolApproval, {
+        businessId,
+        taskId,
+        actor: "owner",
+        decision: "approved",
+        expectedArgsHash: "hash-some-other-call",
+      }),
+    ).rejects.toThrow("approval_argshash_mismatch");
+
+    const task = await t.query(internal.agentTasks.getScopedById, { businessId, taskId });
+    expect(task?.pendingApproval?.argsHash).toBe("hash-npm-publish");
+    const events = await t.query(internal.agentEvents.listByTask, { businessId, taskId });
+    expect(events.some((e) => e.event.kind === "tool_call_approval_decision")).toBe(false);
   });
 
   it("denying clears pendingApproval, logs the decision, and moves the task to needs_review", async () => {
@@ -946,6 +979,7 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
       taskId,
       actor: "ceo",
       decision: "denied",
+      expectedArgsHash: "hash-npm-publish",
     });
 
     expect(result?.status).toBe("needs_review");
@@ -977,6 +1011,7 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
       taskId,
       actor: "owner",
       decision: "approved",
+      expectedArgsHash: "hash-empty",
     });
 
     await expect(
@@ -985,6 +1020,7 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
         taskId,
         actor: "owner",
         decision: "approved",
+        expectedArgsHash: "hash-empty",
       }),
     ).rejects.toThrow("no_pending_approval");
   });
@@ -1121,6 +1157,7 @@ describe("agentTasks: resumed-run atomic claim (THI-73 Finding 2)", () => {
       taskId,
       actor: "owner",
       decision: "approved",
+      expectedArgsHash: "hash-npm-publish",
     });
 
     // Without the clear, this would still throw resume_already_claimed even

@@ -21,6 +21,7 @@ export function ToolCallPendingApprovalCard({
         taskId={data.taskId}
         toolName={data.toolName}
         argsSummary={data.argsSummary}
+        argsHash={data.argsHash}
         isStillPending={isStillPending}
       />
     </TimelineCardShell>

@@ -22,7 +22,7 @@ export type WorkerLoopEvent =
   | { kind: "tool_result"; toolName: string; ok: boolean; resultSummary: string }
   | { kind: "file_diff"; path: string; diffSummary: string }
   | { kind: "error"; message: string }
-  | { kind: "tool_call_pending_approval"; toolName: string; argsSummary: string };
+  | { kind: "tool_call_pending_approval"; toolName: string; argsSummary: string; argsHash: string };
 
 export interface PendingToolApproval {
   toolName: string;
@@ -196,7 +196,7 @@ export async function runWorkerLoop(opts: WorkerLoopOptions): Promise<WorkerLoop
         ) {
           approvedCall = undefined;
         } else {
-          await opts.onEvent({ kind: "tool_call_pending_approval", toolName: call.toolName, argsSummary });
+          await opts.onEvent({ kind: "tool_call_pending_approval", toolName: call.toolName, argsSummary, argsHash });
           return {
             status: "awaiting_approval",
             turns: turn,

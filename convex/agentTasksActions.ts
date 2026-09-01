@@ -154,6 +154,7 @@ export const resolveToolApproval = action({
     taskId: v.id("agentTasks"),
     actor: v.union(v.literal("owner"), v.literal("ceo")),
     decision: v.union(v.literal("approved"), v.literal("denied")),
+    expectedArgsHash: v.string(),
     secret: v.string(),
   },
   handler: async (ctx, { secret, ...args }): Promise<Doc<"agentTasks"> | null> => {

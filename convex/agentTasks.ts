@@ -412,12 +412,24 @@ export const requestToolApproval = internalMutation({
 // double-schedule a resume — the same check-then-mutate guard used
 // elsewhere (dispatchKey, credit ledger, transitionTask's allowed-edges
 // check).
+//
+// THI-91: expectedArgsHash binds the caller to the exact pending call it
+// read, not just "whatever this task's pendingApproval currently is". A
+// task can pause, get approved, resume, and pause again on a *different*
+// destructive call (THI-89) — a UI caller holding a stale
+// tool_call_pending_approval event (rendered before the resume, still on
+// screen after) previously had no way to prove it was deciding the same
+// call it displayed. toolName/argsSummary text can collide between two
+// distinct pending calls; argsHash (hashToolArgs over the full untruncated
+// args) can't. Mismatch throws instead of silently resolving whatever is
+// live now — the same fail-closed posture as the rest of this gate.
 export const resolveToolApproval = internalMutation({
   args: {
     businessId: v.id("businesses"),
     taskId: v.id("agentTasks"),
     actor: v.union(v.literal("owner"), v.literal("ceo")),
     decision: v.union(v.literal("approved"), v.literal("denied")),
+    expectedArgsHash: v.string(),
   },
   handler: async (ctx, args) => {
     const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
@@ -429,6 +441,9 @@ export const resolveToolApproval = internalMutation({
     }
     if (!task.pendingApproval) {
       throw new Error("no_pending_approval");
+    }
+    if (task.pendingApproval.argsHash !== args.expectedArgsHash) {
+      throw new Error("approval_argshash_mismatch");
     }
     const { toolName, argsHash } = task.pendingApproval;
     const now = Date.now();

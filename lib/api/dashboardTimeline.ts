@@ -52,6 +52,7 @@ export async function resolveToolApproval(
   businessId: Id<"businesses">,
   taskId: Id<"agentTasks">,
   decision: "approved" | "denied",
+  expectedArgsHash: string,
 ): Promise<AgentTaskDoc | null> {
   const client = getDashboardConvexClient();
   return client.action(api.agentTasksActions.resolveToolApproval, {
@@ -59,6 +60,7 @@ export async function resolveToolApproval(
     taskId,
     actor: "owner",
     decision,
+    expectedArgsHash,
     secret: getConvexServiceSecret(),
   });
 }

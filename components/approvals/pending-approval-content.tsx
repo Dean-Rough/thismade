@@ -10,11 +10,16 @@ export function PendingApprovalContent({
   taskId,
   toolName,
   argsSummary,
+  argsHash,
   isStillPending,
 }: {
   taskId: Id<"agentTasks">;
   toolName: string;
   argsSummary: string;
+  // THI-91: threaded straight to ApprovalActionButtons — see that
+  // component's own comment for why this binds the decision to the exact
+  // pending call being shown.
+  argsHash: string;
   isStillPending: boolean;
 }) {
   return (
@@ -23,7 +28,7 @@ export function PendingApprovalContent({
       <p className="mt-1 text-ink-muted">{argsSummary}</p>
       {isStillPending ? (
         <div className="mt-2">
-          <ApprovalActionButtons taskId={taskId} />
+          <ApprovalActionButtons taskId={taskId} argsHash={argsHash} />
         </div>
       ) : (
         <p className="mt-2 text-xs text-ink-muted">Resolved — see the decision below.</p>

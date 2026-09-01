@@ -11,7 +11,15 @@ import { Button } from "@/components/ui/button";
 // THI-66) — used inline on the timeline's tool_call_pending_approval card
 // and on the /dashboard/confirmations queue, per THI-17's acceptance
 // criteria. Both call the exact same resolveApprovalAction server action.
-export function ApprovalActionButtons({ taskId }: { taskId: Id<"agentTasks"> }) {
+export function ApprovalActionButtons({
+  taskId,
+  argsHash,
+}: {
+  taskId: Id<"agentTasks">;
+  // THI-91: binds this decision to the exact pending call being displayed —
+  // see app/dashboard/actions.ts's resolveApprovalAction.
+  argsHash: string;
+}) {
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [decided, setDecided] = useState<"approved" | "denied" | null>(null);
@@ -20,7 +28,7 @@ export function ApprovalActionButtons({ taskId }: { taskId: Id<"agentTasks"> }) 
     setError(null);
     startTransition(async () => {
       try {
-        await resolveApprovalAction(taskId, decision);
+        await resolveApprovalAction(taskId, decision, argsHash);
         setDecided(decision);
       } catch {
         setError("Could not record that decision — try again.");

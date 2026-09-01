@@ -43,6 +43,7 @@ export function ConfirmationsQueue({ tasks }: { tasks: AgentTaskDoc[] }) {
                   taskId={task._id}
                   toolName={approval.toolName}
                   argsSummary={approval.argsSummary}
+                  argsHash={approval.argsHash}
                   isStillPending
                 />
               </div>
