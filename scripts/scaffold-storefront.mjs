@@ -148,15 +148,25 @@ function main() {
       `BUSINESS_SLUG=${args.slug}`,
       `ADMIN_JWT_SECRET=${adminSecret}`,
       `FULFILLMENT_HMAC_SECRET=${fulfillmentSecret}`,
-      "# CONVEX_DEPLOYMENT / NEXT_PUBLIC_CONVEX_URL intentionally left blank.",
-      "# See README.md “Known gap: per-business Convex provisioning”.",
+      "# CONVEX_DEPLOYMENT / NEXT_PUBLIC_CONVEX_URL are appended below by the",
+      "# local anonymous Convex backend this script provisions next (dev/test",
+      "# only — it's not reachable once deployed; see README.md 'Known gap').",
       "",
     ].join("\n"),
   );
 
   const env = sanitizedEnv();
   run("npm", ["install"], outDir, env);
-  run("npx", ["convex", "codegen", "--typecheck", "disable", "--init"], outDir, env);
+  // CONVEX_AGENT_MODE=anonymous provisions a fully local Convex backend
+  // (http://127.0.0.1:xxxx, no cloud account) non-interactively — see
+  // README.md "Known gap: per-business Convex provisioning" for why this
+  // isn't a real per-business cloud deployment yet.
+  run(
+    "npx",
+    ["convex", "dev", "--once", "--typecheck", "disable"],
+    outDir,
+    { ...env, CONVEX_AGENT_MODE: "anonymous" },
+  );
   run("npm", ["run", "gate"], outDir, env);
 
   run("git", ["init", "-q"], outDir, env);

@@ -37,31 +37,37 @@ repo's blanket `.env*` gitignore rule doesn't hide it — see that repo's
 `BUSINESS_SLUG`, `ADMIN_JWT_SECRET`, and `FULFILLMENT_HMAC_SECRET`
 automatically with fresh per-business values.
 
-## Known gap: per-business Convex provisioning
+## Known gap: per-business Convex provisioning is local-only, not live
 
-Each generated storefront is supposed to get its own Convex deployment
-(architecture doc: "Generated storefront is its own Next.js + Convex repo,
-separate Convex deployment from the platform's"). This environment's only
-working Convex credential is `CONVEX_DEPLOY_KEY`, which is scoped to the
-**platform's own** dev deployment (`dev:vibrant-gnat-42`) — it cannot create
-a new project. Provisioning a new Convex cloud project requires either an
-interactive `npx convex login` + `convex dev --configure=new`, or a
-team-scoped (project-creation) API token, neither of which is available in
-this headless run.
+Each generated storefront is supposed to get its own **cloud** Convex
+deployment (architecture doc: "Generated storefront is its own Next.js +
+Convex repo, separate Convex deployment from the platform's"). This
+environment's only working Convex credential is `CONVEX_DEPLOY_KEY`, which
+is scoped to the **platform's own** dev deployment (`dev:vibrant-gnat-42`)
+— it cannot create a new cloud project, and there's no interactive login
+available in a headless run.
+
+`scripts/scaffold-storefront.mjs` works around this with
+`CONVEX_AGENT_MODE=anonymous npx convex dev --once`, which provisions a
+fully local, no-account Convex backend at `http://127.0.0.1:<port>` and
+pushes this repo's schema/functions to it. That's real — build, typecheck,
+and test all exercise genuine Convex codegen/queries/mutations against it —
+but it only runs on the machine that started it and is **not** reachable
+once the Next.js app is deployed to Vercel.
 
 Because of that:
 
 - The auth boundaries (`/admin` gate, `/api/fulfillment` HMAC check) are
-  fully self-contained and don't depend on a live Convex deployment — they
+  fully self-contained and don't depend on any Convex deployment — they
   verify signatures locally and fail closed if their secret env var is
-  unset. Both are testable and deployable today.
-- `convex/schema.ts` + `convex/fulfillmentEvents.ts` are real, typechecked,
-  tested (via `convex-test`, no live backend needed) Convex code, and
-  `convex codegen` runs locally without a deployment. But until a business
-  gets its own Convex project, `POST /api/fulfillment` responds
+  unset. Both are real and deployable today, independent of this gap.
+- In a live deployment, `NEXT_PUBLIC_CONVEX_URL` is left unset (the local
+  `http://127.0.0.1:...` URL from scaffolding is dev-only and must not be
+  shipped), so `POST /api/fulfillment` responds
   `{ ok: true, recorded: false, reason: "convex_not_configured" }` instead
-  of persisting the event — the security boundary is real, the persistence
-  behind it is not yet wired to a live per-business backend.
+  of persisting the event — the security boundary is enforced either way;
+  the persistence behind it needs a real per-business cloud project first.
 - Escalate to whoever manages the `roughton` Convex team for a
-  project-creation-scoped token (or run the one-time interactive
-  provisioning step per business) before this gap can close.
+  project-creation-scoped deploy key (or run `npx convex login` +
+  `convex dev --configure new` interactively, once per business) before
+  this gap can close.
