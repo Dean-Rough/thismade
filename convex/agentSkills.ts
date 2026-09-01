@@ -1,11 +1,15 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 
 // Storage layer only, same split as agentContextFiles: the actual skill
 // prompt *content* (e.g. a "brandkit" image-gen skill) is a separate,
 // Security & Compliance Reviewer-gated workstream — see THI-8's child
 // issues. No skill prompt text lives in this repo file.
-export const get = query({
+//
+// Every function below is internal-only (THI-42, extended per THI-55
+// review): fronted by a secret-gated public action in
+// agentSkillsActions.ts, same split as businesses.ts/businessesActions.ts.
+export const get = internalQuery({
   args: { businessId: v.id("businesses"), skillKey: v.string() },
   handler: async (ctx, args) => {
     return ctx.db
@@ -17,7 +21,7 @@ export const get = query({
   },
 });
 
-export const listByBusiness = query({
+export const listByBusiness = internalQuery({
   args: { businessId: v.id("businesses") },
   handler: async (ctx, args) => {
     return ctx.db
@@ -30,7 +34,7 @@ export const listByBusiness = query({
 // Upsert bumps `version` on every write instead of a plain replace —
 // skills are "versioned prompt files" per docs/madethis-agent-architecture.md,
 // unlike the singleton-replace agentContextFiles.upsert.
-export const upsert = mutation({
+export const upsert = internalMutation({
   args: {
     businessId: v.id("businesses"),
     skillKey: v.string(),

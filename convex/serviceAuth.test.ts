@@ -82,4 +82,57 @@ describe("service secret gate (THI-42)", () => {
     const status = await t.query(internal.payouts.getConnectStatus, { businessId });
     expect(status?.stripeConnectAccountId).toBeNull();
   });
+
+  // THI-55 follow-up: agentContextFiles/agentSkills/seedAgentContext were
+  // missed in the original THI-42 pass — same client-supplied-businessId
+  // gap, exposing real ownerEmail/commercial data (OWNER.md/BUSINESS.md)
+  // and, via seedDefaults, a way to overwrite a business's entire agent
+  // identity. Proves the gate now covers them too.
+  it("blocks an unauthenticated read of a business's agent context files", async () => {
+    process.env.CONVEX_SERVICE_SECRET = "correct-secret";
+    const t = convexTest(schema, modules);
+    const businessId = await t.mutation(internal.businesses.create, {
+      name: "Business A",
+      slug: "service-auth-agent-context",
+      ownerUserId: "user_a",
+    });
+    await t.mutation(internal.agentContextFiles.upsert, {
+      businessId,
+      fileKey: "OWNER",
+      content: "real ownerEmail lives here",
+    });
+
+    await expect(
+      t.action(api.agentContextFilesActions.get, {
+        businessId,
+        fileKey: "OWNER",
+        secret: "not-the-real-secret",
+      }),
+    ).rejects.toThrow();
+  });
+
+  // The highest-severity finding in this follow-up: an anonymous caller
+  // could overwrite a business's entire agent identity (all 8 context
+  // files + the brandkit skill) in one call, since seedDefaults trusted a
+  // plain client-supplied businessId with no auth at all.
+  it("blocks an unauthenticated call to seedAgentContextActions.seedDefaults", async () => {
+    process.env.CONVEX_SERVICE_SECRET = "correct-secret";
+    const t = convexTest(schema, modules);
+    const businessId = await t.mutation(internal.businesses.create, {
+      name: "Business A",
+      slug: "service-auth-seed-agent-context",
+      ownerUserId: "user_a",
+    });
+
+    await expect(
+      t.action(api.seedAgentContextActions.seedDefaults, {
+        businessId,
+        provisionedAtIso: "2026-09-01",
+        secret: "not-the-real-secret",
+      }),
+    ).rejects.toThrow();
+
+    const files = await t.query(internal.agentContextFiles.listByBusiness, { businessId });
+    expect(files).toHaveLength(0);
+  });
 });

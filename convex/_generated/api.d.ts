@@ -9,8 +9,10 @@
  */
 
 import type * as agentContextFiles from "../agentContextFiles.js";
+import type * as agentContextFilesActions from "../agentContextFilesActions.js";
 import type * as agentEvents from "../agentEvents.js";
 import type * as agentSkills from "../agentSkills.js";
+import type * as agentSkillsActions from "../agentSkillsActions.js";
 import type * as agentTasks from "../agentTasks.js";
 import type * as apiKeys from "../apiKeys.js";
 import type * as apiKeysActions from "../apiKeysActions.js";
@@ -34,6 +36,7 @@ import type * as payoutsActions from "../payoutsActions.js";
 import type * as products from "../products.js";
 import type * as productsActions from "../productsActions.js";
 import type * as seedAgentContext from "../seedAgentContext.js";
+import type * as seedAgentContextActions from "../seedAgentContextActions.js";
 
 import type {
   ApiFromModules,
@@ -43,8 +46,10 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   agentContextFiles: typeof agentContextFiles;
+  agentContextFilesActions: typeof agentContextFilesActions;
   agentEvents: typeof agentEvents;
   agentSkills: typeof agentSkills;
+  agentSkillsActions: typeof agentSkillsActions;
   agentTasks: typeof agentTasks;
   apiKeys: typeof apiKeys;
   apiKeysActions: typeof apiKeysActions;
@@ -68,6 +73,7 @@ declare const fullApi: ApiFromModules<{
   products: typeof products;
   productsActions: typeof productsActions;
   seedAgentContext: typeof seedAgentContext;
+  seedAgentContextActions: typeof seedAgentContextActions;
 }>;
 
 /**

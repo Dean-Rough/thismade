@@ -1,6 +1,6 @@
 import { v } from "convex/values";
-import { action } from "./_generated/server";
-import { api, internal } from "./_generated/api";
+import { internalAction } from "./_generated/server";
+import { internal } from "./_generated/api";
 import {
   BRAND_IDENTITY_KIT_SKILL_KEY,
   CONTEXT_FILE_KEYS,
@@ -19,7 +19,14 @@ import {
 // is fine here — context files/skills are independent rows with no
 // cross-file atomicity requirement, unlike a credit debit tied to a task
 // insert.
-export const seedDefaults = action({
+//
+// Internal-only (THI-42, extended per THI-55 review): this used to be a
+// public `action` with no auth check at all — any caller who knew the
+// deployment URL could overwrite a business's entire agent identity (all 8
+// context files + the brandkit skill) with attacker-chosen content just by
+// supplying its businessId. Fronted by a secret-gated public action in
+// seedAgentContextActions.ts, same split as every other domain under THI-42.
+export const seedDefaults = internalAction({
   args: {
     businessId: v.id("businesses"),
     ownerName: v.optional(v.string()),
@@ -57,14 +64,14 @@ export const seedDefaults = action({
     });
 
     for (const fileKey of CONTEXT_FILE_KEYS) {
-      await ctx.runMutation(api.agentContextFiles.upsert, {
+      await ctx.runMutation(internal.agentContextFiles.upsert, {
         businessId: args.businessId,
         fileKey,
         content: files[fileKey],
       });
     }
 
-    await ctx.runMutation(api.agentSkills.upsert, {
+    await ctx.runMutation(internal.agentSkills.upsert, {
       businessId: args.businessId,
       skillKey: BRAND_IDENTITY_KIT_SKILL_KEY,
       content: renderBrandIdentityKitSkill(),
