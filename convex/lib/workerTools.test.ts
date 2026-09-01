@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { executeTool, isDestructiveToolCall } from "./workerTools";
+import { describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { executeTool, isDestructiveToolCall, planNavigationHop, BROWSER_DRIVER_SCRIPT } from "./workerTools";
 import type { ToolExecutionContext } from "./workerTools";
 import type { SandboxCommandResult, SandboxHandle } from "./sandboxProvider";
 
@@ -127,5 +131,101 @@ describe("isDestructiveToolCall (THI-66)", () => {
 
   it("does not throw or misclassify an unregistered tool name — callers must check assertToolAllowed separately", () => {
     expect(isDestructiveToolCall("marketing", "run_shell")).toBe(false);
+  });
+});
+
+// THI-72: planNavigationHop is the tested source of truth for the pinning
+// decision the sandboxed browser driver's hand-written mirror (pinHostname
+// in BROWSER_DRIVER_SCRIPT) has to reproduce - these tests exercise the
+// actual algorithm directly, since the driver script itself only runs
+// inside a real E2B sandbox this environment doesn't have credentials for.
+describe("planNavigationHop (THI-72 DNS-rebinding pin)", () => {
+  it("rejects a disallowed scheme before ever resolving anything", async () => {
+    const resolveHostname = vi.fn();
+    await expect(planNavigationHop("file:///etc/passwd", new Set(), resolveHostname)).rejects.toThrow(
+      "navigate_blocked:disallowed_scheme:file:",
+    );
+    expect(resolveHostname).not.toHaveBeenCalled();
+  });
+
+  it("rejects a blocked literal IP with no rule to pin", async () => {
+    await expect(planNavigationHop("http://169.254.169.254/", new Set(), vi.fn())).rejects.toThrow(
+      "navigate_blocked:private_address:169.254.169.254",
+    );
+  });
+
+  it("returns no rule for an allowed literal IP - nothing to pin, Chromium connects directly", async () => {
+    const plan = await planNavigationHop("http://93.184.216.34/", new Set(), vi.fn());
+    expect(plan).toEqual({ hostname: "93.184.216.34", newHostResolverRule: null });
+  });
+
+  it("resolves an unpinned hostname and returns a MAP rule joining every validated address", async () => {
+    const resolveHostname = vi.fn().mockResolvedValue(["93.184.216.34", "93.184.216.35"]);
+    const plan = await planNavigationHop("https://example.com/", new Set(), resolveHostname);
+    expect(resolveHostname).toHaveBeenCalledWith("example.com");
+    expect(plan).toEqual({
+      hostname: "example.com",
+      newHostResolverRule: "MAP example.com 93.184.216.34,93.184.216.35",
+    });
+  });
+
+  it("rejects a hostname if any resolved address is private, even if others are public", async () => {
+    const resolveHostname = vi.fn().mockResolvedValue(["93.184.216.34", "10.0.0.5"]);
+    await expect(planNavigationHop("https://mixed.example/", new Set(), resolveHostname)).rejects.toThrow(
+      "navigate_blocked:private_address:mixed.example",
+    );
+  });
+
+  it("does not re-resolve an already-pinned hostname (this is what closes the rebinding window on repeat hops)", async () => {
+    const resolveHostname = vi.fn().mockResolvedValue(["10.0.0.5"]); // would fail if it were called
+    const plan = await planNavigationHop("https://already-pinned.example/", new Set(["already-pinned.example"]), resolveHostname);
+    expect(resolveHostname).not.toHaveBeenCalled();
+    expect(plan).toEqual({ hostname: "already-pinned.example", newHostResolverRule: null });
+  });
+
+  it("fails closed when DNS resolution throws", async () => {
+    const resolveHostname = vi.fn().mockRejectedValue(new Error("ENOTFOUND"));
+    await expect(planNavigationHop("https://does-not-resolve.example/", new Set(), resolveHostname)).rejects.toThrow(
+      "navigate_blocked:dns_resolution_failed:does-not-resolve.example",
+    );
+  });
+});
+
+// This environment has no E2B credentials, so BROWSER_DRIVER_SCRIPT's actual
+// Playwright/host-resolver-rules behavior can't be exercised end-to-end here
+// - that remains unverified until it runs against a real sandbox. This test
+// is a narrower, honest claim: the exact text shipped to the sandbox is at
+// least syntactically valid ESM, so a template-literal escaping slip (e.g. a
+// stray backslash in the regexes mirrored from isBlockedIpv6) would fail CI
+// instead of only surfacing as a runtime crash inside a live worker task.
+describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
+  it("is syntactically valid ES module source", () => {
+    const dir = mkdtempSync(join(tmpdir(), "thismade-driver-script-check-"));
+    const scriptPath = join(dir, "driver.mjs");
+    try {
+      writeFileSync(scriptPath, BROWSER_DRIVER_SCRIPT);
+      expect(() => execFileSync(process.execPath, ["--check", scriptPath], { stdio: "pipe" })).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("wires up host-resolver-rules pinning and a bounded redirect-hop loop", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain("--host-resolver-rules=");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("context.route(");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("isNavigationRequest");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("MAX_REDIRECT_HOPS");
+  });
+
+  // THI-72 follow-up: page.route() never sees WebSocket connections or
+  // window.open() popups, so a scraped/prompt-injected page's own JS could
+  // reach an internal/metadata host through either primitive without ever
+  // touching the pinning/validation logic above. Asserting the driver source
+  // wires up the context-level guards is the same "catch a future regression
+  // in the shipped text" pattern as the pinning assertion above.
+  it("closes popups, blocks WebSocket connections, and disables service workers", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain("context.on(\"page\"");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("routeWebSocket(");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("serviceWorkers: \"block\"");
   });
 });
