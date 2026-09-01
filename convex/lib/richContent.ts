@@ -19,6 +19,12 @@ export const dispatchEvent = v.object({
     v.literal("marketing"),
   ),
   instructions: v.string(),
+  // Trust-boundary tag (THI-62): whether the dispatcher is declaring these
+  // instructions as its own, or as embedding lower-trust input (a chat
+  // message, catalog copy, a webhook payload). Carried onto the event so
+  // the audit trail — and eventually a worker's prompt assembler — never
+  // has to guess provenance after the fact.
+  containsUntrustedContent: v.boolean(),
 });
 
 export const statusChangeEvent = v.object({

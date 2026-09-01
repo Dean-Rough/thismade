@@ -135,6 +135,7 @@ describe("service secret gate (THI-56)", () => {
         workerType: "coding",
         dispatchKey: "attacker-key",
         instructions: "do something",
+        containsUntrustedContent: false,
         creditCost: 0,
         secret: "not-the-real-secret",
       }),

@@ -51,3 +51,35 @@ describe("agentEvents: chat", () => {
     expect(await t.query(internal.agentEvents.listByBusiness, { businessId: businessBId })).toHaveLength(0);
   });
 });
+
+describe("agentEvents: chat text hardening (THI-62)", () => {
+  it("rejects an empty chat message", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "chat-hardening-empty");
+
+    await expect(
+      t.mutation(internal.agentEvents.sendChatMessage, {
+        businessId,
+        authorRole: "owner",
+        text: "",
+      }),
+    ).rejects.toThrow("invalid_text_length");
+
+    expect(await t.query(internal.agentEvents.listByBusiness, { businessId })).toHaveLength(0);
+  });
+
+  it("rejects a chat message over the length cap", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "chat-hardening-long");
+
+    await expect(
+      t.mutation(internal.agentEvents.sendChatMessage, {
+        businessId,
+        authorRole: "owner",
+        text: "x".repeat(4_001),
+      }),
+    ).rejects.toThrow("invalid_text_length");
+
+    expect(await t.query(internal.agentEvents.listByBusiness, { businessId })).toHaveLength(0);
+  });
+});

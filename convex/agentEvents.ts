@@ -4,6 +4,14 @@ import { getScoped } from "./lib/tenancy";
 import { logEvent } from "./lib/events";
 import type { Doc } from "./_generated/dataModel";
 
+// Blast-radius cap (THI-62): an owner's chat text is exactly the kind of
+// lower-trust input the CEO orchestrator may later fold into a worker's
+// `instructions` (agentTasks.dispatch), so this table is itself part of the
+// prompt-injection trust boundary, not just an audit log. A length limit
+// doesn't neutralize injected content, but it bounds how much of it a
+// single message can carry.
+const MAX_CHAT_TEXT_LENGTH = 4_000;
+
 // Internal-only (THI-56): every function here is fronted by the matching
 // action in agentEventsActions.ts, same pattern as THI-42.
 //
@@ -18,6 +26,9 @@ export const sendChatMessage = internalMutation({
     text: v.string(),
   },
   handler: async (ctx, args) => {
+    if (args.text.length === 0 || args.text.length > MAX_CHAT_TEXT_LENGTH) {
+      throw new Error("invalid_text_length");
+    }
     const now = Date.now();
     await logEvent(ctx, {
       businessId: args.businessId,
