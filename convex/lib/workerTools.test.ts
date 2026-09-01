@@ -290,6 +290,39 @@ describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
     expect(BROWSER_DRIVER_SCRIPT).toContain('page.on("console"');
     expect(BROWSER_DRIVER_SCRIPT).toContain("result.diagnostics = diagnostics");
   });
+
+  // THI-80 Finding 1: the appendChild/insertBefore/rel/setAttribute patches
+  // above only fire for a <link> built via document.createElement plus a
+  // JS-level DOM mutation - none of them fire when the same element is built
+  // through the browser's native HTML-fragment parser instead
+  // (innerHTML/outerHTML assignment, insertAdjacentHTML,
+  // document.write/writeln), which is a full bypass of the DOM-injection
+  // guard. Assert the shipped text intercepts all four of those paths and
+  // runs their input through the same strip transform as the literal
+  // response body.
+  it("intercepts innerHTML/outerHTML/insertAdjacentHTML/document.write so markup-parser insertion can't bypass the link guard", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain("stripSpeculativeLinkMarkup");
+    expect(BROWSER_DRIVER_SCRIPT).toContain('["innerHTML", "outerHTML"]');
+    expect(BROWSER_DRIVER_SCRIPT).toContain("Element.prototype.insertAdjacentHTML");
+    expect(BROWSER_DRIVER_SCRIPT).toContain('["write", "writeln"]');
+    expect(BROWSER_DRIVER_SCRIPT).toContain("Document.prototype[method]");
+  });
+
+  // THI-80 Finding 2: the page-console diagnostic relay used to match on the
+  // static literal "thismade:", which any navigated page could forge itself
+  // via console.error, spoofing a "trusted" diagnostic or drowning real ones
+  // in noise. Assert the shipped text generates an unpredictable
+  // per-invocation token, threads it into addInitScript as a function
+  // argument (never assigned to window), and matches on that instead of the
+  // old static prefix.
+  it("gates the page-console diagnostic relay on an unpredictable per-invocation token instead of a guessable static prefix", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain('import { randomUUID } from "node:crypto"');
+    expect(BROWSER_DRIVER_SCRIPT).toContain("const DIAG_TOKEN = randomUUID();");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("addInitScript((diagToken) =>");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("}, DIAG_TOKEN);");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("text.indexOf(DIAG_TOKEN) === 0");
+    expect(BROWSER_DRIVER_SCRIPT).not.toContain('text.indexOf("thismade:") === 0');
+  });
 });
 
 // THI-79 Finding 1: hasBlockedLinkRel/neutralizeSpeculativeLinkElement are

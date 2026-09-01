@@ -458,6 +458,7 @@ import { chromium } from "playwright";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { randomUUID } from "node:crypto";
 
 const STATE_PATH = ${JSON.stringify(BROWSER_STATE_PATH)};
 const MAX_REDIRECT_HOPS = ${JSON.stringify(MAX_REDIRECT_HOPS)};
@@ -474,6 +475,15 @@ const args = JSON.parse(argsJson || "{}");
 // path executeTool/runBrowserAction already reads resultSummary from -
 // callers get an observable trail instead of a silent fallback.
 const diagnostics = [];
+// THI-80 Finding 2: the page-console relay below used to match on the static
+// literal "thismade:" - any navigated page can call console.error with that
+// exact prefix itself, forging a "trusted" diagnostic (or drowning real ones
+// in noise) since console.error is an ordinary page-callable API. Generating
+// a fresh unpredictable token per process invocation and requiring the relay
+// to match it instead closes that: the token is passed into addInitScript as
+// a function argument (never assigned to window or otherwise exposed to page
+// script), so a page has no way to read or reproduce it.
+const DIAG_TOKEN = randomUUID();
 function errMessage(err) {
   return err && err.message ? err.message : String(err);
 }
@@ -707,7 +717,7 @@ async function navigateWithPinning(targetUrl, rules) {
     // flag whose exact ICE-gathering behavior isn't independently verified
     // here. Runs on every frame this context ever creates, including popups,
     // before any page script does.
-    await context.addInitScript(() => {
+    await context.addInitScript((diagToken) => {
       for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection"]) {
         try {
           Object.defineProperty(window, name, {
@@ -727,7 +737,7 @@ async function navigateWithPinning(targetUrl, rules) {
           const descriptor = Object.getOwnPropertyDescriptor(window, name);
           if (!descriptor || descriptor.configurable !== false) {
             console.error(
-              "thismade: failed to lock down " + name + ": " + (err && err.message ? err.message : String(err)),
+              diagToken + ": failed to lock down " + name + ": " + (err && err.message ? err.message : String(err)),
             );
           }
         }
@@ -773,7 +783,7 @@ async function navigateWithPinning(targetUrl, rules) {
             return original.apply(this, methodArgs);
           };
         } catch (err) {
-          console.error("thismade: failed to patch Node.prototype." + method + ": " + (err && err.message ? err.message : String(err)));
+          console.error(diagToken + ": failed to patch Node.prototype." + method + ": " + (err && err.message ? err.message : String(err)));
         }
       }
       try {
@@ -789,7 +799,7 @@ async function navigateWithPinning(targetUrl, rules) {
           });
         }
       } catch (err) {
-        console.error("thismade: failed to patch HTMLLinkElement.prototype.rel: " + (err && err.message ? err.message : String(err)));
+        console.error(diagToken + ": failed to patch HTMLLinkElement.prototype.rel: " + (err && err.message ? err.message : String(err)));
       }
       try {
         const originalSetAttribute = Element.prototype.setAttribute;
@@ -800,19 +810,89 @@ async function navigateWithPinning(targetUrl, rules) {
           return originalSetAttribute.call(this, name, value);
         };
       } catch (err) {
-        console.error("thismade: failed to patch Element.prototype.setAttribute: " + (err && err.message ? err.message : String(err)));
+        console.error(diagToken + ": failed to patch Element.prototype.setAttribute: " + (err && err.message ? err.message : String(err)));
       }
-    });
+
+      // THI-80 Finding 1: stripSpeculativeLinkTags (applied to the raw HTTP
+      // response body in allowRequest) and the appendChild/insertBefore/rel/
+      // setAttribute patches above only ever see a <link> element built via
+      // document.createElement plus a JS-level DOM-API mutation. None of
+      // those fire when a page instead builds the same element through the
+      // browser's native HTML-fragment parser: innerHTML/outerHTML
+      // assignment, insertAdjacentHTML, and document.write/writeln all
+      // construct and insert elements without ever calling
+      // appendChild/insertBefore, and the rel attribute is already present
+      // at parse time so setAttribute/the rel setter never fire either.
+      // LinkLoader still honors the element regardless of insertion method,
+      // so this was a full bypass - arguably the more common way real page
+      // JS (and injection payloads) build markup than createElement +
+      // appendChild. Closed by running every HTML string headed for the
+      // parser through the same strip-and-comment-out transform
+      // stripSpeculativeLinkTags already applies to the literal response
+      // body, before handing it to the native setter/method. This is a
+      // third hand-written copy of that regex (see stripSpeculativeLinkTags'
+      // module-level comment for why a shared import isn't possible across
+      // this boundary) because this one has to live inside the
+      // addInitScript closure, not the script's Node-side top level.
+      function stripSpeculativeLinkMarkup(html) {
+        return String(html == null ? "" : html).replace(/<link\b[^>]*>/gi, (tag) => {
+          const relMatch = tag.match(/\brel\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i);
+          if (!relMatch) return tag;
+          if (hasBlockedLinkRel(relMatch[1].replace(/^["']|["']$/g, ""))) {
+            return "<!-- thismade: stripped speculative link -->";
+          }
+          return tag;
+        });
+      }
+      for (const prop of ["innerHTML", "outerHTML"]) {
+        try {
+          const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, prop);
+          if (descriptor && descriptor.set) {
+            Object.defineProperty(Element.prototype, prop, {
+              configurable: descriptor.configurable,
+              enumerable: descriptor.enumerable,
+              get: descriptor.get,
+              set(value) {
+                descriptor.set.call(this, stripSpeculativeLinkMarkup(value));
+              },
+            });
+          }
+        } catch (err) {
+          console.error(diagToken + ": failed to patch Element.prototype." + prop + ": " + (err && err.message ? err.message : String(err)));
+        }
+      }
+      try {
+        const originalInsertAdjacentHTML = Element.prototype.insertAdjacentHTML;
+        Element.prototype.insertAdjacentHTML = function (position, text) {
+          return originalInsertAdjacentHTML.call(this, position, stripSpeculativeLinkMarkup(text));
+        };
+      } catch (err) {
+        console.error(diagToken + ": failed to patch Element.prototype.insertAdjacentHTML: " + (err && err.message ? err.message : String(err)));
+      }
+      for (const method of ["write", "writeln"]) {
+        try {
+          const original = Document.prototype[method];
+          Document.prototype[method] = function (...methodArgs) {
+            return original.apply(this, methodArgs.map(stripSpeculativeLinkMarkup));
+          };
+        } catch (err) {
+          console.error(diagToken + ": failed to patch Document.prototype." + method + ": " + (err && err.message ? err.message : String(err)));
+        }
+      }
+    }, DIAG_TOKEN);
     const page = await context.newPage();
     // THI-79: addInitScript runs in the page's own JS realm, so its
     // console.error calls above never reach this Node process's
-    // stdout/stderr on their own - relay them into the diagnostics array
-    // (prefixed "thismade:" so a page's own unrelated console noise doesn't
-    // get mistaken for a security diagnostic) so an unexpected lockdown
-    // failure is observable in resultSummary instead of silent.
+    // stdout/stderr on their own - relay them into the diagnostics array.
+    // THI-80 Finding 2: this used to match on the static literal
+    // "thismade:", which any navigated page could forge itself by calling
+    // console.error with that exact prefix - matching on the unpredictable
+    // per-invocation DIAG_TOKEN instead (known only to this Node process and
+    // the addInitScript closure it was passed into, never exposed on
+    // window) means a page has no way to counterfeit a "trusted" diagnostic.
     page.on("console", (msg) => {
       const text = msg.text();
-      if (msg.type() === "error" && text.indexOf("thismade:") === 0) {
+      if (msg.type() === "error" && text.indexOf(DIAG_TOKEN) === 0) {
         diagnostics.push("page console: " + text);
       }
     });
