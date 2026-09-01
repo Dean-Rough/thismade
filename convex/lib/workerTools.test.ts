@@ -8,9 +8,11 @@ import {
   isDestructiveToolCall,
   planNavigationHop,
   stripSpeculativeLinkTags,
+  hasBlockedLinkRel,
+  neutralizeSpeculativeLinkElement,
   BROWSER_DRIVER_SCRIPT,
 } from "./workerTools";
-import type { ToolExecutionContext } from "./workerTools";
+import type { ToolExecutionContext, MinimalLinkElement } from "./workerTools";
 import type { SandboxCommandResult, SandboxHandle } from "./sandboxProvider";
 
 // A minimal SandboxHandle whose runCommand records every invocation. If
@@ -259,6 +261,99 @@ describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
   it("does not let the document-rewrite path swallow a redirect response", () => {
     expect(BROWSER_DRIVER_SCRIPT).toContain("maxRedirects: 0");
     expect(BROWSER_DRIVER_SCRIPT).toContain("status >= 300 && status < 400");
+  });
+
+  // THI-79 Finding 1: stripSpeculativeLinkTags only ever sees the literal
+  // response body - it does nothing to stop page JS creating a
+  // rel=preconnect|dns-prefetch <link> at runtime via DOM APIs. Assert the
+  // shipped text wires up the same init-script interception pattern used for
+  // WebRTC above, since this too can't be proven against a real Chromium
+  // without live E2B credentials.
+  it("neutralizes DOM-injected preconnect/dns-prefetch <link> elements via the same init-script pattern as WebRTC", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain("neutralizeSpeculativeLinkElement");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("Node.prototype[method]");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("HTMLLinkElement.prototype");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("Element.prototype.setAttribute");
+  });
+
+  // THI-79 Finding 2: the catch blocks around the body-rewrite path and the
+  // WebRTC defineProperty lockdown used to swallow every error silently and
+  // fall through to an unmodified continue()/no-op. Assert the shipped text
+  // distinguishes "fetch itself failed" (safe to fall back) from "we got a
+  // response but couldn't rewrite it" (must abort, not silently serve
+  // unstripped content), and that both paths - plus the WebRTC lockdown
+  // catch - now emit an observable diagnostic instead of swallowing silently.
+  it("does not fail open silently: aborts on rewrite failure and surfaces a diagnostic on every catch", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain('route.abort("blockedbyclient")');
+    expect(BROWSER_DRIVER_SCRIPT).toContain("diagnostics.push(");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("descriptor.configurable !== false");
+    expect(BROWSER_DRIVER_SCRIPT).toContain('page.on("console"');
+    expect(BROWSER_DRIVER_SCRIPT).toContain("result.diagnostics = diagnostics");
+  });
+});
+
+// THI-79 Finding 1: hasBlockedLinkRel/neutralizeSpeculativeLinkElement are
+// the tested source of truth the driver script's hand-written mirror (same
+// functions, inlined as JS text inside BROWSER_DRIVER_SCRIPT's
+// addInitScript) has to reproduce - same "test the TS copy directly" pattern
+// as planNavigationHop/pinHostname and stripSpeculativeLinkTags above. This
+// is the "where testable without live E2B" DOM-injection coverage the
+// literal-markup stripSpeculativeLinkTags tests above can't provide, since a
+// real DOM-injection repro needs a live Chromium context.route()/LinkLoader
+// this environment has no E2B credentials to drive.
+describe("hasBlockedLinkRel / neutralizeSpeculativeLinkElement (THI-79)", () => {
+  it("flags preconnect and dns-prefetch case-insensitively, including alongside other rel tokens", () => {
+    expect(hasBlockedLinkRel("preconnect")).toBe(true);
+    expect(hasBlockedLinkRel("PRECONNECT")).toBe(true);
+    expect(hasBlockedLinkRel("dns-prefetch")).toBe(true);
+    expect(hasBlockedLinkRel("noopener preconnect")).toBe(true);
+  });
+
+  it("does not flag unrelated or absent rel values", () => {
+    expect(hasBlockedLinkRel("stylesheet")).toBe(false);
+    expect(hasBlockedLinkRel("prefetch")).toBe(false);
+    expect(hasBlockedLinkRel(null)).toBe(false);
+    expect(hasBlockedLinkRel(undefined)).toBe(false);
+  });
+
+  function fakeLinkElement(tagName: string, rel: string, href: string): MinimalLinkElement {
+    const attrs: Record<string, string> = { rel, href };
+    return {
+      tagName,
+      getAttribute: (name) => attrs[name] ?? null,
+      setAttribute: (name, value) => {
+        attrs[name] = value;
+      },
+      removeAttribute: (name) => {
+        delete attrs[name];
+      },
+    };
+  }
+
+  it("strips rel and href from a DOM-injected preconnect link (the document.createElement + appendChild bypass)", () => {
+    const el = fakeLinkElement("LINK", "preconnect", "https://169.254.169.254/");
+    expect(neutralizeSpeculativeLinkElement(el)).toBe(true);
+    expect(el.getAttribute("rel")).toBe("");
+    expect(el.getAttribute("href")).toBeNull();
+  });
+
+  it("strips a dns-prefetch link the same way", () => {
+    const el = fakeLinkElement("LINK", "dns-prefetch", "//10.0.0.5/");
+    expect(neutralizeSpeculativeLinkElement(el)).toBe(true);
+    expect(el.getAttribute("rel")).toBe("");
+  });
+
+  it("leaves a non-speculative link element untouched", () => {
+    const el = fakeLinkElement("LINK", "stylesheet", "/app.css");
+    expect(neutralizeSpeculativeLinkElement(el)).toBe(false);
+    expect(el.getAttribute("rel")).toBe("stylesheet");
+    expect(el.getAttribute("href")).toBe("/app.css");
+  });
+
+  it("only neutralizes LINK elements, even if something else carries a blocked rel value", () => {
+    const el = fakeLinkElement("A", "preconnect", "https://evil.example");
+    expect(neutralizeSpeculativeLinkElement(el)).toBe(false);
+    expect(el.getAttribute("rel")).toBe("preconnect");
   });
 });
 

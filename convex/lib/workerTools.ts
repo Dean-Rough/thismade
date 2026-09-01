@@ -387,6 +387,50 @@ export function stripSpeculativeLinkTags(html: string): string {
   });
 }
 
+// THI-79: stripSpeculativeLinkTags only ever sees the literal HTTP response
+// body - it does nothing to stop page JS from creating a
+// rel=preconnect|dns-prefetch <link> via DOM APIs at runtime
+// (document.createElement + appendChild), which Chromium's LinkLoader honors
+// regardless of how the element was created. This closes that gap the same
+// way THI-75 closed WebRTC: an addInitScript that neutralizes the element the
+// moment it would take effect, before any page script runs. The predicate and
+// transform are plain functions so this test file can exercise the DOM-
+// injection defense directly (this environment has no live E2B/Chromium to
+// drive real DOM mutation through); the mirror ships as JS text inside
+// BROWSER_DRIVER_SCRIPT's addInitScript callback (same "can't import this
+// module from inside the sandbox" reason as isBlockedIpv4/
+// stripSpeculativeLinkTags above) since addInitScript's callback runs in the
+// browser's own JS realm, not this Node process.
+const BLOCKED_LINK_RELS = new Set(["preconnect", "dns-prefetch"]);
+
+export function hasBlockedLinkRel(relValue: string | null | undefined): boolean {
+  return String(relValue ?? "")
+    .toLowerCase()
+    .split(/\s+/)
+    .some((token) => BLOCKED_LINK_RELS.has(token));
+}
+
+export interface MinimalLinkElement {
+  tagName: string;
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
+}
+
+// Strips the blocked rel and drops href so the element can no longer trigger
+// a preconnect/dns-prefetch, whether it's about to be attached to the
+// document (appendChild/insertBefore) or already is (rel/setAttribute
+// mutated after insertion). Returns whether it neutralized anything so
+// callers can decide whether an element needs no further handling.
+export function neutralizeSpeculativeLinkElement(el: MinimalLinkElement): boolean {
+  if (el.tagName !== "LINK" || !hasBlockedLinkRel(el.getAttribute("rel"))) {
+    return false;
+  }
+  el.setAttribute("rel", "");
+  el.removeAttribute("href");
+  return true;
+}
+
 // A fresh Playwright launch per call, restoring only the last-visited URL
 // (not full DOM/session state) between calls — simple and correct rather
 // than fast. A persistent in-sandbox driver process is the natural follow-up
@@ -419,6 +463,20 @@ const STATE_PATH = ${JSON.stringify(BROWSER_STATE_PATH)};
 const MAX_REDIRECT_HOPS = ${JSON.stringify(MAX_REDIRECT_HOPS)};
 const [, , action, argsJson] = process.argv;
 const args = JSON.parse(argsJson || "{}");
+
+// THI-79: collects the "this silently fell back" / "this silently kept
+// running" signals that used to vanish into an empty catch block - both from
+// this Node process directly (allowRequest below) and relayed from the
+// browser's own console (see the page.on("console", ...) listener in
+// navigateWithPinning), since addInitScript callbacks run in the page's JS
+// realm and can't write to this process's stdout/stderr directly. Folded into
+// the final result object so it rides the same runCommand stdout capture
+// path executeTool/runBrowserAction already reads resultSummary from -
+// callers get an observable trail instead of a silent fallback.
+const diagnostics = [];
+function errMessage(err) {
+  return err && err.message ? err.message : String(err);
+}
 
 function loadState() {
   if (!existsSync(STATE_PATH)) return { url: null, hostResolverRules: [] };
@@ -581,20 +639,42 @@ function stripSpeculativeLinkTags(html) {
 // every other hop already is.
 async function allowRequest(route) {
   if (route.request().resourceType() === "document") {
+    let response;
     try {
-      const response = await route.fetch({ maxRedirects: 0 });
-      const status = response.status();
-      if (status >= 300 && status < 400) {
-        await route.continue();
-        return;
-      }
+      response = await route.fetch({ maxRedirects: 0 });
+    } catch (err) {
+      // THI-79: no response was ever obtained, so nothing unstripped could
+      // have shipped - falling back to the normal CDP request flow is still
+      // safe. But this used to be silent: a host the attacker controls
+      // (already pinned-but-untrusted, exactly this driver's threat model)
+      // could trigger route.fetch() failures on demand with zero signal.
+      // Log so the fallback is observable instead.
+      diagnostics.push("allowRequest: route.fetch() failed, falling back to unmodified continue(): " + errMessage(err));
+      await route.continue();
+      return;
+    }
+    const status = response.status();
+    if (status >= 300 && status < 400) {
+      await route.continue();
+      return;
+    }
+    try {
       const body = await response.text();
       await route.fulfill({ response, body: stripSpeculativeLinkTags(body) });
       return;
-    } catch {
-      // Fetch/rewrite failed for a reason unrelated to the validation above
-      // (already passed) - fall through to a plain continue rather than
-      // failing the whole navigation over a cosmetic rewrite.
+    } catch (err) {
+      // THI-79: a response was obtained but reading/rewriting it failed -
+      // the previous behaviour fell back to route.continue() here too,
+      // which would serve the document completely unstripped and gave an
+      // attacker-controlled host a way to trigger this exact fallback on
+      // demand. Abort instead: failing the navigation is safer than
+      // silently shipping unstripped <link rel=preconnect|dns-prefetch>
+      // markup, and log it so the abort's cause is observable.
+      diagnostics.push(
+        "allowRequest: response rewrite failed, aborting navigation instead of serving unstripped content: " + errMessage(err),
+      );
+      await route.abort("blockedbyclient");
+      return;
     }
   }
   await route.continue();
@@ -636,13 +716,106 @@ async function navigateWithPinning(targetUrl, rules) {
               throw new Error(name + " is disabled in this sandbox");
             },
           });
-        } catch {
-          // Already non-configurable in this Chromium build - nothing more
-          // to do; the property can't be redefined by page script either.
+        } catch (err) {
+          // THI-79: the only *expected* throw here is "already
+          // non-configurable" (a Chromium build that ships the property
+          // that way already) - in that case there's nothing more to do,
+          // the property can't be redefined by page script either. Any
+          // other throw reason means the lockdown didn't happen and
+          // RTCPeerConnection is still live with zero signal, so verify the
+          // assumption instead of silently swallowing every throw.
+          const descriptor = Object.getOwnPropertyDescriptor(window, name);
+          if (!descriptor || descriptor.configurable !== false) {
+            console.error(
+              "thismade: failed to lock down " + name + ": " + (err && err.message ? err.message : String(err)),
+            );
+          }
         }
+      }
+
+      // THI-79: stripSpeculativeLinkTags (below, applied to the raw response
+      // body in allowRequest) does nothing to stop page JS from creating a
+      // rel=preconnect|dns-prefetch <link> at runtime via DOM APIs, which
+      // Chromium's LinkLoader honors regardless of how the element arrived.
+      // Neutralize any such element the moment it would take effect: strip
+      // the blocked rel (and drop href) before Node.prototype.appendChild/
+      // insertBefore hand it - or any of its descendants - to the document,
+      // and again if page script sets .rel/.setAttribute("rel", …) on an
+      // element already in the tree. This is a stopgap, not a substitute for
+      // sandbox-level egress control: it's still routable-around via Shadow
+      // DOM or other insertion primitives this doesn't patch.
+      function hasBlockedLinkRel(relValue) {
+        return String(relValue || "")
+          .toLowerCase()
+          .split(/\\s+/)
+          .some((token) => token === "preconnect" || token === "dns-prefetch");
+      }
+      function neutralizeSpeculativeLinkElement(el) {
+        if (!el || el.tagName !== "LINK" || !hasBlockedLinkRel(el.getAttribute("rel"))) {
+          return false;
+        }
+        el.setAttribute("rel", "");
+        el.removeAttribute("href");
+        return true;
+      }
+      function neutralizeTree(node) {
+        if (!node || node.nodeType !== 1) return;
+        neutralizeSpeculativeLinkElement(node);
+        if (typeof node.querySelectorAll === "function") {
+          node.querySelectorAll("link[rel]").forEach(neutralizeSpeculativeLinkElement);
+        }
+      }
+      for (const method of ["appendChild", "insertBefore"]) {
+        try {
+          const original = Node.prototype[method];
+          Node.prototype[method] = function (...methodArgs) {
+            neutralizeTree(methodArgs[0]);
+            return original.apply(this, methodArgs);
+          };
+        } catch (err) {
+          console.error("thismade: failed to patch Node.prototype." + method + ": " + (err && err.message ? err.message : String(err)));
+        }
+      }
+      try {
+        const relDescriptor = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, "rel");
+        if (relDescriptor && relDescriptor.set) {
+          Object.defineProperty(HTMLLinkElement.prototype, "rel", {
+            configurable: relDescriptor.configurable,
+            enumerable: relDescriptor.enumerable,
+            get: relDescriptor.get,
+            set(value) {
+              relDescriptor.set.call(this, hasBlockedLinkRel(value) ? "" : value);
+            },
+          });
+        }
+      } catch (err) {
+        console.error("thismade: failed to patch HTMLLinkElement.prototype.rel: " + (err && err.message ? err.message : String(err)));
+      }
+      try {
+        const originalSetAttribute = Element.prototype.setAttribute;
+        Element.prototype.setAttribute = function (name, value) {
+          if (this.tagName === "LINK" && String(name).toLowerCase() === "rel" && hasBlockedLinkRel(value)) {
+            return originalSetAttribute.call(this, name, "");
+          }
+          return originalSetAttribute.call(this, name, value);
+        };
+      } catch (err) {
+        console.error("thismade: failed to patch Element.prototype.setAttribute: " + (err && err.message ? err.message : String(err)));
       }
     });
     const page = await context.newPage();
+    // THI-79: addInitScript runs in the page's own JS realm, so its
+    // console.error calls above never reach this Node process's
+    // stdout/stderr on their own - relay them into the diagnostics array
+    // (prefixed "thismade:" so a page's own unrelated console noise doesn't
+    // get mistaken for a security diagnostic) so an unexpected lockdown
+    // failure is observable in resultSummary instead of silent.
+    page.on("console", (msg) => {
+      const text = msg.text();
+      if (msg.type() === "error" && text.indexOf("thismade:") === 0) {
+        diagnostics.push("page console: " + text);
+      }
+    });
     let redirectTarget = null;
     await context.route("**/*", async (route) => {
       const reqUrl = route.request().url();
@@ -736,6 +909,10 @@ try {
 } finally {
   if (browser) await browser.close();
 }
+// THI-79: attach whatever allowRequest/the WebRTC+link-guard lockdown
+// reported, on both the success and failure path - a fallback that still
+// let the navigation succeed is exactly the case that must not go silent.
+if (diagnostics.length) result.diagnostics = diagnostics;
 process.stdout.write(JSON.stringify(result));
 `;
 
@@ -768,17 +945,25 @@ async function runBrowserAction(
   if (result.exitCode !== 0) {
     return { ok: false, resultSummary: truncate(result.stderr || result.stdout) };
   }
-  let parsed: { ok: boolean; text?: string; url?: string; error?: string };
+  let parsed: { ok: boolean; text?: string; url?: string; error?: string; diagnostics?: string[] };
   try {
     parsed = JSON.parse(result.stdout);
   } catch {
     return { ok: false, resultSummary: truncate(`unparseable_driver_output: ${result.stdout}`) };
   }
+  // THI-79: a fallback (e.g. allowRequest falling back to an unstripped
+  // continue(), or the WebRTC/link lockdown silently failing to apply) can
+  // fire on a navigation that otherwise still reports ok: true - fold any
+  // driver diagnostics into resultSummary on both branches below so that
+  // case surfaces in the tool_result event instead of vanishing.
+  const diagnosticsSuffix = parsed.diagnostics?.length
+    ? `\ndiagnostics:\n${parsed.diagnostics.join("\n")}`
+    : "";
   if (!parsed.ok) {
-    return { ok: false, resultSummary: truncate(parsed.error ?? "browser_action_failed") };
+    return { ok: false, resultSummary: truncate((parsed.error ?? "browser_action_failed") + diagnosticsSuffix) };
   }
-  const summary = parsed.text ? truncate(parsed.text) : (parsed.url ?? "ok");
-  return { ok: true, resultSummary: summary };
+  const summary = parsed.text ? parsed.text : (parsed.url ?? "ok");
+  return { ok: true, resultSummary: truncate(summary + diagnosticsSuffix) };
 }
 
 // Executes one already-allowlisted tool call. Callers must call
