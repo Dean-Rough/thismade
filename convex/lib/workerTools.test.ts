@@ -352,9 +352,9 @@ describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
 // worker's Node process would execute) and run it directly, so a future
 // escaping slip in this region fails here instead of only surfacing as a
 // live worker task silently letting speculative <link> tags through.
-function extractFunctionSource(script: string, name: string): string {
+function extractFunctionSource(script: string, name: string, fromIndex = 0): string {
   const marker = `function ${name}(`;
-  const start = script.indexOf(marker);
+  const start = script.indexOf(marker, fromIndex);
   if (start === -1) throw new Error(`${name} not found in BROWSER_DRIVER_SCRIPT`);
   const braceStart = script.indexOf("{", start);
   let depth = 0;
@@ -374,12 +374,25 @@ function extractFunctionSource(script: string, name: string): string {
 
 describe("BROWSER_DRIVER_SCRIPT addInitScript link guard, executed against the actual shipped text (THI-81)", () => {
   function loadAddInitScriptLinkGuard() {
-    const hasBlockedLinkRelSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "hasBlockedLinkRel");
-    const stripSpeculativeLinkMarkupSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "stripSpeculativeLinkMarkup");
+    // THI-86: BROWSER_DRIVER_SCRIPT now has two distinct scanLinkTag
+    // functions - a top-level one used by stripSpeculativeLinkTags, and this
+    // closure's own copy used by stripSpeculativeLinkMarkup. extractFunctionSource
+    // finds the first textual match, so every lookup here must be scoped to
+    // start at (or after) the addInitScript closure, or "scanLinkTag" would
+    // silently resolve to the top-level copy instead of this one.
+    const closureStart = BROWSER_DRIVER_SCRIPT.indexOf("await context.addInitScript(");
+    if (closureStart === -1) throw new Error("addInitScript closure not found in BROWSER_DRIVER_SCRIPT");
+    const hasBlockedLinkRelSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "hasBlockedLinkRel", closureStart);
+    const scanLinkTagSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "scanLinkTag", closureStart);
+    const stripSpeculativeLinkMarkupSrc = extractFunctionSource(
+      BROWSER_DRIVER_SCRIPT,
+      "stripSpeculativeLinkMarkup",
+      closureStart,
+    );
     // eslint-disable-next-line no-new-func -- deliberately executing the
     // exact text that ships to the sandbox, not a hand-copied stand-in.
     const factory = new Function(
-      `${hasBlockedLinkRelSrc}\n${stripSpeculativeLinkMarkupSrc}\nreturn { hasBlockedLinkRel, stripSpeculativeLinkMarkup };`,
+      `${hasBlockedLinkRelSrc}\n${scanLinkTagSrc}\n${stripSpeculativeLinkMarkupSrc}\nreturn { hasBlockedLinkRel, stripSpeculativeLinkMarkup };`,
     );
     return factory() as { hasBlockedLinkRel: (v: string) => boolean; stripSpeculativeLinkMarkup: (html: string) => string };
   }
@@ -443,13 +456,56 @@ describe("BROWSER_DRIVER_SCRIPT addInitScript link guard, executed against the a
     stripSpeculativeLinkMarkup(html);
     expect(Date.now() - start).toBeLessThan(500);
   });
+
+  // THI-86 PoC: the atomic-group regex (THI-84's fix) commits to one greedy
+  // reading of the repetition with no ability to backtrack into it, so this
+  // malformed-but-browser-parseable tag - whose greedy quoted-span reading
+  // swallows the only reachable '>' - failed to match at all, leaving a live
+  // rel=preconnect link completely unstripped. Verified against real
+  // Chromium (a local Playwright build navigated to this exact markup):
+  // Chromium parses it as `<link rel="preconnect" href="x&quot;AB">`, ending
+  // the tag at the first real '>' exactly like the pre-THI-84 (backtracking)
+  // regex did and the THI-84 atomic version did not.
+  it("strips a link tag whose greedy quoted-span reading has no reachable '>' to backtrack onto (THI-86)", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const html = '<link rel=preconnect href=x"AB>CD"noclosingbracket';
+    expect(stripSpeculativeLinkMarkup(html)).not.toContain("preconnect");
+  });
+
+  // THI-86: the n=60 timing test above only proves the OLD atomic-group
+  // regex doesn't blow up on ONE shape - it says nothing about this
+  // tokenizer, and the issue's own caveat showed a naive regex-only
+  // correctness patch (lookbehind-anchored quoted-span opening) reintroduced
+  // catastrophic backtracking on a different shape (many `="` pairs before a
+  // dead end). These run at 300-800x the size of the old test to prove the
+  // O(html.length) bound structurally rather than for one input shape at a
+  // small n - any backtracking regex would already have failed long before
+  // reaching these sizes.
+  it("stays linear at a scale where any backtracking regex would already have failed", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const shapes = [
+      "<html><head><link rel=preconnect href=" + '"'.repeat(50_000) + "x".repeat(200),
+      "<link href" + '="'.repeat(50_000),
+      "<link " + 'a="x" '.repeat(20_000) + 'b="' + "y".repeat(50_000),
+    ];
+    for (const html of shapes) {
+      const start = Date.now();
+      stripSpeculativeLinkMarkup(html);
+      expect(Date.now() - start).toBeLessThan(1000);
+    }
+  });
 });
 
 describe("BROWSER_DRIVER_SCRIPT allowRequest body-rewrite mirror, executed against the actual shipped text (THI-81)", () => {
   function loadBodyRewriteMirror() {
+    // THI-86: stripSpeculativeLinkTags now delegates to a sibling top-level
+    // scanLinkTag (found first since it appears before the addInitScript
+    // closure's own same-named copy) - it must be included too, or the
+    // executed text throws ReferenceError: scanLinkTag is not defined.
+    const scanLinkTagSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "scanLinkTag");
     const src = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "stripSpeculativeLinkTags");
     // eslint-disable-next-line no-new-func -- see loadAddInitScriptLinkGuard above.
-    const factory = new Function(`${src}\nreturn stripSpeculativeLinkTags;`);
+    const factory = new Function(`${scanLinkTagSrc}\n${src}\nreturn stripSpeculativeLinkTags;`);
     return factory() as (html: string) => string;
   }
 
@@ -481,6 +537,33 @@ describe("BROWSER_DRIVER_SCRIPT allowRequest body-rewrite mirror, executed again
     const start = Date.now();
     strip(html);
     expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  // THI-86 PoC: this is the live production path (allowRequest's body
+  // rewrite, running on the literal HTTP response body of any page
+  // navigate() visits) - see the equivalent Node-side test above for the
+  // full root cause and the real-Chromium verification of the expected
+  // parse boundary.
+  it("strips a link tag whose greedy quoted-span reading has no reachable '>' to backtrack onto (THI-86)", () => {
+    const strip = loadBodyRewriteMirror();
+    const html = '<link rel=preconnect href=x"AB>CD"noclosingbracket';
+    expect(strip(html)).not.toContain("preconnect");
+  });
+
+  // THI-86: see the equivalent addInitScript-mirror test above for why the
+  // old n=60 timing test alone isn't sufficient coverage for this tokenizer.
+  it("stays linear at a scale where any backtracking regex would already have failed", () => {
+    const strip = loadBodyRewriteMirror();
+    const shapes = [
+      "<html><head><link rel=preconnect href=" + '"'.repeat(50_000) + "x".repeat(200),
+      "<link href" + '="'.repeat(50_000),
+      "<link " + 'a="x" '.repeat(20_000) + 'b="' + "y".repeat(50_000),
+    ];
+    for (const html of shapes) {
+      const start = Date.now();
+      strip(html);
+      expect(Date.now() - start).toBeLessThan(1000);
+    }
   });
 });
 
@@ -632,5 +715,55 @@ describe("stripSpeculativeLinkTags (THI-75)", () => {
     const start = Date.now();
     stripSpeculativeLinkTags(html);
     expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  // THI-86 PoC: the THI-84 atomic-group emulation (`(?=(...))\1`) commits to
+  // one greedy reading of the repetition with no ability to backtrack into
+  // it from outside. THI-82's fix depended on exactly that backtracking:
+  // when the greedy quoted-span reading swallows the only reachable '>' and
+  // is a dead end, the engine used to retry treating the stray quote as a
+  // literal character instead. The atomic version can't retry, so this tag
+  // failed to match at all and its live rel=preconnect passed through
+  // completely unstripped - a full bypass, not a truncation. Independently
+  // verified against real Chromium (a local Playwright build navigated to
+  // this exact markup): the browser parses it as
+  // `<link rel="preconnect" href="x&quot;AB">`, ending the tag at the first
+  // real '>' - exactly the boundary this tokenizer now finds.
+  it("strips a link tag whose greedy quoted-span reading has no reachable '>' to backtrack onto (THI-86)", () => {
+    const html = '<link rel=preconnect href=x"AB>CD"noclosingbracket';
+    const stripped = stripSpeculativeLinkTags(html);
+    expect(stripped).not.toContain("preconnect");
+    expect(stripped).not.toContain("<link");
+    // The tail after the real closing '>' (per the WHATWG unquoted-value
+    // state, that stray '"' is a literal character, not a span-opener) must
+    // survive untouched - proves the tokenizer found the same boundary
+    // Chromium does, not merely "some" boundary that happens to strip rel=.
+    expect(stripped).toContain('CD"noclosingbracket');
+  });
+
+  // THI-86: the n=60 timing test above only proves the OLD atomic-group
+  // regex doesn't blow up on ONE shape - it says nothing about this
+  // tokenizer, and the issue's own caveat showed a naive regex-only
+  // correctness patch (lookbehind-anchored quoted-span opening) reintroduced
+  // catastrophic backtracking on a different shape (many `="` pairs before a
+  // dead end). These run at 300-800x the size of the old test to prove the
+  // O(html.length) bound structurally - every branch in scanLinkTag advances
+  // the scan position by at least one character, so there is no ambiguous
+  // interpretation left to backtrack through regardless of input shape.
+  it("stays linear at a scale where any backtracking regex would already have failed", () => {
+    const shapes = [
+      // Same shape as the THI-84 regression test above, at ~800x the size.
+      "<html><head><link rel=preconnect href=" + '"'.repeat(50_000) + "x".repeat(200),
+      // The shape the issue's rejected lookbehind-anchored interim fix
+      // choked on: many `="` pairs before a dead end with no reachable '>'.
+      "<link href" + '="'.repeat(50_000),
+      // Many well-formed quoted attributes, then one unterminated tail.
+      "<link " + 'a="x" '.repeat(20_000) + 'b="' + "y".repeat(50_000),
+    ];
+    for (const html of shapes) {
+      const start = Date.now();
+      stripSpeculativeLinkTags(html);
+      expect(Date.now() - start).toBeLessThan(1000);
+    }
   });
 });
