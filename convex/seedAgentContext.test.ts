@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 import { CONTEXT_FILE_KEYS } from "./lib/agentContextTemplates";
 
@@ -19,7 +19,7 @@ describe("seedAgentContext.seedDefaults", () => {
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "seed-a");
 
-    const result = await t.action(api.seedAgentContext.seedDefaults, {
+    const result = await t.action(internal.seedAgentContext.seedDefaults, {
       businessId,
       provisionedAtIso: "2026-09-01",
     });
@@ -45,7 +45,7 @@ describe("seedAgentContext.seedDefaults", () => {
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "seed-b");
 
-    await t.action(api.seedAgentContext.seedDefaults, {
+    await t.action(internal.seedAgentContext.seedDefaults, {
       businessId,
       provisionedAtIso: "2026-09-01",
     });
@@ -65,11 +65,11 @@ describe("seedAgentContext.seedDefaults", () => {
     const t = convexTest(schema, modules);
     const businessId = await makeBusiness(t, "seed-c");
 
-    await t.action(api.seedAgentContext.seedDefaults, {
+    await t.action(internal.seedAgentContext.seedDefaults, {
       businessId,
       provisionedAtIso: "2026-09-01",
     });
-    await t.action(api.seedAgentContext.seedDefaults, {
+    await t.action(internal.seedAgentContext.seedDefaults, {
       businessId,
       provisionedAtIso: "2026-09-02",
     });
@@ -94,7 +94,7 @@ describe("seedAgentContext.seedDefaults", () => {
     });
 
     await expect(
-      t.action(api.seedAgentContext.seedDefaults, {
+      t.action(internal.seedAgentContext.seedDefaults, {
         businessId,
         provisionedAtIso: "2026-09-01",
       }),

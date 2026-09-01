@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { action } from "./_generated/server";
+import { internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
   BRAND_IDENTITY_KIT_SKILL_KEY,
@@ -19,7 +19,15 @@ import {
 // is fine here — context files/skills are independent rows with no
 // cross-file atomicity requirement, unlike a credit debit tied to a task
 // insert.
-export const seedDefaults = action({
+//
+// Internal-only (THI-58): nothing in the app calls this today — it only
+// ever runs via `npx convex run` with the deploy key during provisioning —
+// so unlike the *Actions.ts front doors elsewhere in this fix, it doesn't
+// need a public, secret-gated wrapper at all. A public action here would
+// have let anyone re-seed/overwrite any business's context files and skill
+// by businessId alone, with no secret check possible to add after the fact
+// since seeding is meant to run unattended.
+export const seedDefaults = internalAction({
   args: {
     businessId: v.id("businesses"),
     ownerName: v.optional(v.string()),
