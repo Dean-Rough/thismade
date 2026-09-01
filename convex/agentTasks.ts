@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { getScoped } from "./lib/tenancy";
 import { logEvent } from "./lib/events";
 import { spendCredits } from "./creditLedger";
@@ -337,6 +338,113 @@ export const recordAttemptFailure = internalMutation({
       actor: "worker",
       event: { kind: "error", taskId: args.taskId, message: args.errorMessage },
       createdAt: now,
+    });
+    return ctx.db.get(args.taskId);
+  },
+});
+
+// THI-66: the worker loop's (convex/lib/workerLoop.ts's
+// isDestructiveToolCall gate) only way to record that it paused instead of
+// executing a destructive tool call. No `actor` param — same
+// identity-boundary reasoning as beginWorkerRun/completeWorkerRun, this is
+// the loop's own infrastructure noting a pause, never a claim to be human.
+// Deliberately doesn't touch `status`: the gate is orthogonal to the
+// todo/in_progress/needs_review/done kanban lifecycle, not a fifth column —
+// a task can sit here mid-run, well before it would otherwise reach
+// needs_review.
+export const requestToolApproval = internalMutation({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+    toolName: v.string(),
+    argsSummary: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
+    if (!task) {
+      return null;
+    }
+    if (task.circuitBroken) {
+      throw new Error("task_circuit_broken");
+    }
+    if (task.status !== "in_progress") {
+      throw new Error(`invalid_pending_approval_status:${task.status}`);
+    }
+    const now = Date.now();
+    await ctx.db.patch(args.taskId, {
+      pendingApproval: { toolName: args.toolName, argsSummary: args.argsSummary, requestedAt: now },
+      updatedAt: now,
+    });
+    return ctx.db.get(args.taskId);
+  },
+});
+
+// THI-66: the only way to clear a pending destructive-call approval.
+// `actor` is restricted to "owner" | "ceo" at the argument-validator level
+// (narrower than the general ACTOR union) — the same human-in-the-loop
+// boundary as the needs_review -> done transition above, enforced earlier
+// here since there's no other business-logic branch that would otherwise
+// need to check it. A worker (or anything acting on its behalf via injected
+// instructions) has no path to this mutation at all.
+//
+// Idempotent by construction: this throws "no_pending_approval" once
+// pendingApproval has been cleared, so a retried call (network retry,
+// duplicate click) after the first one already resolved cannot re-decide or
+// double-schedule a resume — the same check-then-mutate guard used
+// elsewhere (dispatchKey, credit ledger, transitionTask's allowed-edges
+// check).
+export const resolveToolApproval = internalMutation({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+    actor: v.union(v.literal("owner"), v.literal("ceo")),
+    decision: v.union(v.literal("approved"), v.literal("denied")),
+  },
+  handler: async (ctx, args) => {
+    const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
+    if (!task) {
+      return null;
+    }
+    if (task.circuitBroken) {
+      throw new Error("task_circuit_broken");
+    }
+    if (!task.pendingApproval) {
+      throw new Error("no_pending_approval");
+    }
+    const { toolName } = task.pendingApproval;
+    const now = Date.now();
+    await ctx.db.patch(args.taskId, { pendingApproval: undefined, updatedAt: now });
+    await logEvent(ctx, {
+      businessId: args.businessId,
+      taskId: args.taskId,
+      actor: args.actor,
+      event: { kind: "tool_call_approval_decision", taskId: args.taskId, toolName, decision: args.decision },
+      createdAt: now,
+    });
+
+    if (args.decision === "denied") {
+      // The task can't proceed on its own past a denied destructive call —
+      // hand it to needs_review so the owner/CEO decides what happens next
+      // (abandon, re-dispatch with amended instructions, etc.), the same
+      // in_progress -> needs_review edge completeWorkerRun uses for a
+      // normal finish.
+      return transitionTask(ctx, {
+        businessId: args.businessId,
+        taskId: args.taskId,
+        toStatus: "needs_review",
+        actor: args.actor,
+      });
+    }
+
+    // Approved: schedule a resumed run (convex/workerRunner.ts's
+    // resumeWorkerTask). No conversation or sandbox state survives the
+    // pause — see that function's own comment for why a resumed run
+    // replays `instructions` from scratch with a single-use grant for this
+    // toolName rather than continuing mid-conversation.
+    await ctx.scheduler.runAfter(0, internal.workerRunner.resumeWorkerTask, {
+      businessId: args.businessId,
+      taskId: args.taskId,
+      approvedToolName: toolName,
     });
     return ctx.db.get(args.taskId);
   },

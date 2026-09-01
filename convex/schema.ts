@@ -115,6 +115,8 @@ export default defineSchema({
   // Phase 3 (agent core, THI-8): CEO->worker kanban board. Lifecycle is
   // strictly todo -> in_progress -> needs_review -> done; see
   // convex/agentTasks.ts advanceStatus for the allowed-transition table.
+  // `pendingApproval` (THI-66) is an orthogonal in_progress-only side gate,
+  // not a fifth kanban column — see that field's own comment below.
   agentTasks: defineTable({
     businessId: v.id("businesses"),
     title: v.string(),
@@ -150,6 +152,19 @@ export default defineSchema({
     // failure. A circuit-broken task must surface for owner/CEO attention,
     // never silently retry again.
     circuitBroken: v.boolean(),
+    // THI-66: set by agentTasks.requestToolApproval when the worker loop
+    // pauses before executing a destructive tool call (see
+    // convex/lib/workerTools.ts's isDestructiveToolCall), cleared by
+    // agentTasks.resolveToolApproval. Distinct from the needs_review -> done
+    // gate: status stays "in_progress" while this is set — a destructive
+    // call can happen well before a task otherwise finishes.
+    pendingApproval: v.optional(
+      v.object({
+        toolName: v.string(),
+        argsSummary: v.string(),
+        requestedAt: v.number(),
+      }),
+    ),
     createdAt: v.number(),
     updatedAt: v.number(),
   })

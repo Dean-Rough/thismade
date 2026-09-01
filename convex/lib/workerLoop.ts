@@ -2,6 +2,7 @@ import type { LlmClient, LlmMessage } from "./llmClient";
 import {
   assertToolAllowed,
   executeTool,
+  isDestructiveToolCall,
   ToolNotAllowedError,
   toolsForWorkerType,
 } from "./workerTools";
@@ -19,12 +20,21 @@ export type WorkerLoopEvent =
   | { kind: "tool_call"; toolName: string; argsSummary: string }
   | { kind: "tool_result"; toolName: string; ok: boolean; resultSummary: string }
   | { kind: "file_diff"; path: string; diffSummary: string }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  | { kind: "tool_call_pending_approval"; toolName: string; argsSummary: string };
+
+export interface PendingToolApproval {
+  toolName: string;
+  argsSummary: string;
+}
 
 export interface WorkerLoopOutcome {
-  status: "completed" | "circuit_broken";
+  status: "completed" | "circuit_broken" | "awaiting_approval";
   turns: number;
   failureReason?: string;
+  // Set only when status is "awaiting_approval" — see workerRunner.ts's
+  // requestToolApproval wiring.
+  pendingApproval?: PendingToolApproval;
 }
 
 export interface WorkerLoopOptions {
@@ -41,6 +51,15 @@ export interface WorkerLoopOptions {
   maxDurationMs?: number;
   onEvent: (event: WorkerLoopEvent) => Promise<void> | void;
   now?: () => number;
+  // THI-66: a single-use grant for one destructive call of this toolName,
+  // set only by convex/workerRunner.ts's resumeWorkerTask after an
+  // owner/CEO approves a pending call. No conversation or sandbox state
+  // survives the pause (see resumeWorkerTask's own comment for why) — a
+  // resumed run replays `instructions` from scratch, so this grant is what
+  // lets the model's retraced destructive call actually execute instead of
+  // pausing again. Consumed on first match; a second destructive call later
+  // in the same resumed run still gates normally.
+  approvedToolName?: string;
 }
 
 const DEFAULT_MAX_TURNS = 20;
@@ -66,6 +85,11 @@ export async function runWorkerLoop(opts: WorkerLoopOptions): Promise<WorkerLoop
   const startedAt = now();
   const tools = toolsForWorkerType(opts.workerType);
   const messages: LlmMessage[] = [{ role: "user", content: opts.instructions }];
+  // Single-use grant (see WorkerLoopOptions.approvedToolName) — cleared the
+  // first time it's actually consumed so a second destructive call later in
+  // this same run still gates normally rather than getting a free pass for
+  // the rest of the task.
+  let approvedToolName = opts.approvedToolName;
 
   for (let turn = 0; turn < maxTurns; turn++) {
     if (now() - startedAt > maxDurationMs) {
@@ -89,11 +113,30 @@ export async function runWorkerLoop(opts: WorkerLoopOptions): Promise<WorkerLoop
     }
 
     for (const call of turnResult.toolCalls) {
-      await opts.onEvent({
-        kind: "tool_call",
-        toolName: call.toolName,
-        argsSummary: summarizeArgs(call.input),
-      });
+      const argsSummary = summarizeArgs(call.input);
+      await opts.onEvent({ kind: "tool_call", toolName: call.toolName, argsSummary });
+
+      // THI-66: destructive-approval gate. Only intercepts a call that is
+      // both registered for this workerType (an unregistered/hallucinated
+      // tool name still falls through to the ordinary
+      // assertToolAllowed/ToolNotAllowedError path below) and classified
+      // destructive — and only when it isn't the single-use grant this run
+      // was resumed with. The gate returns immediately: no tool_result is
+      // logged for a call that never ran, and the loop ends here rather
+      // than continuing to whatever the model proposes next.
+      const isRegistered = tools.some((tool) => tool.name === call.toolName);
+      if (isRegistered && isDestructiveToolCall(opts.workerType, call.toolName)) {
+        if (call.toolName === approvedToolName) {
+          approvedToolName = undefined;
+        } else {
+          await opts.onEvent({ kind: "tool_call_pending_approval", toolName: call.toolName, argsSummary });
+          return {
+            status: "awaiting_approval",
+            turns: turn,
+            pendingApproval: { toolName: call.toolName, argsSummary },
+          };
+        }
+      }
 
       let ok: boolean;
       let resultSummary: string;
@@ -118,10 +161,11 @@ export async function runWorkerLoop(opts: WorkerLoopOptions): Promise<WorkerLoop
         ok = false;
         resultSummary = err instanceof Error ? err.message : String(err);
         // A denied tool call is a distinct audit event, not silently folded
-        // into the tool_result — THI-66's future approval-gate work needs
-        // denials to be visible on the task's timeline as more than just
-        // "the tool_result happened to say ok: false" (design lens: log
-        // denied/gated tool calls as typed events, not silently).
+        // into the tool_result — denials need to be visible on the task's
+        // timeline as more than just "the tool_result happened to say
+        // ok: false" (design lens: log denied/gated tool calls as typed
+        // events, not silently). The destructive-approval gate above logs
+        // its own tool_call_pending_approval event the same way.
         if (err instanceof ToolNotAllowedError) {
           await opts.onEvent({ kind: "error", message: resultSummary });
         }

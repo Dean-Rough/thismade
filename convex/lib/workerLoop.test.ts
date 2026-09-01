@@ -153,6 +153,104 @@ describe("runWorkerLoop", () => {
     expect(outcome).toEqual({ status: "circuit_broken", turns: 3, failureReason: "exceeded_max_turns:3" });
   });
 
+  it("pauses on a destructive tool call instead of executing it, and logs a typed pending-approval event", async () => {
+    const sandbox = new FakeSandbox();
+    const llmClient = new ScriptedLlmClient([
+      {
+        text: "",
+        toolCalls: [{ id: "call-1", toolName: "run_shell", input: { command: "rm -rf node_modules" } }],
+        finishReason: "tool_calls",
+      },
+    ]);
+    const { events, onEvent } = collectEvents();
+
+    const outcome = await runWorkerLoop({
+      workerType: "coding",
+      systemPrompt: "system",
+      instructions: "clean up",
+      llmClient,
+      toolContext: { sandbox },
+      onEvent,
+    });
+
+    expect(outcome).toEqual({
+      status: "awaiting_approval",
+      turns: 0,
+      pendingApproval: { toolName: "run_shell", argsSummary: '{"command":"rm -rf node_modules"}' },
+    });
+    expect(events.map((e) => e.kind)).toEqual(["tool_call", "tool_call_pending_approval"]);
+    // The gate returns before executeTool ever runs — no shell command
+    // reaches the sandbox.
+    expect(sandbox.commands).toHaveLength(0);
+  });
+
+  it("executes a pre-approved destructive call once, then continues the loop normally", async () => {
+    const sandbox = new FakeSandbox();
+    const llmClient = new ScriptedLlmClient([
+      {
+        text: "",
+        toolCalls: [{ id: "call-1", toolName: "run_shell", input: { command: "npm test" } }],
+        finishReason: "tool_calls",
+      },
+      { text: "Tests passed.", toolCalls: [], finishReason: "stop" },
+    ]);
+    const { events, onEvent } = collectEvents();
+
+    const outcome = await runWorkerLoop({
+      workerType: "coding",
+      systemPrompt: "system",
+      instructions: "run the tests",
+      llmClient,
+      toolContext: { sandbox },
+      approvedToolName: "run_shell",
+      onEvent,
+    });
+
+    expect(outcome).toEqual({ status: "completed", turns: 2 });
+    expect(events.map((e) => e.kind)).toEqual(["tool_call", "tool_result"]);
+    expect(sandbox.commands).toEqual(["cd '/home/user/workspace' && npm test"]);
+  });
+
+  it("only honors the approval grant once — a second destructive call in the same run still pauses", async () => {
+    const sandbox = new FakeSandbox();
+    const llmClient = new ScriptedLlmClient([
+      {
+        text: "",
+        toolCalls: [{ id: "call-1", toolName: "run_shell", input: { command: "npm install" } }],
+        finishReason: "tool_calls",
+      },
+      {
+        text: "",
+        toolCalls: [{ id: "call-2", toolName: "run_shell", input: { command: "npm publish" } }],
+        finishReason: "tool_calls",
+      },
+    ]);
+    const { events, onEvent } = collectEvents();
+
+    const outcome = await runWorkerLoop({
+      workerType: "coding",
+      systemPrompt: "system",
+      instructions: "install then publish",
+      llmClient,
+      toolContext: { sandbox },
+      approvedToolName: "run_shell",
+      onEvent,
+    });
+
+    expect(outcome).toEqual({
+      status: "awaiting_approval",
+      turns: 1,
+      pendingApproval: { toolName: "run_shell", argsSummary: '{"command":"npm publish"}' },
+    });
+    expect(events.map((e) => e.kind)).toEqual([
+      "tool_call",
+      "tool_result",
+      "tool_call",
+      "tool_call_pending_approval",
+    ]);
+    expect(sandbox.commands).toEqual(["cd '/home/user/workspace' && npm install"]);
+  });
+
   it("trips the circuit breaker on wall-clock duration even within the turn budget", async () => {
     // The duration check runs before each turn, not after, so a single turn
     // that completes immediately (no tool calls) would never hit it — this

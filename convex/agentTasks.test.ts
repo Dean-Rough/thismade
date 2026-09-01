@@ -1,5 +1,5 @@
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 
@@ -803,5 +803,183 @@ describe("agentTasks: worker-loop identity boundary (THI-68)", () => {
     await expect(
       t.mutation(internal.agentTasks.beginWorkerRun, { businessId, taskId: task!._id }),
     ).rejects.toThrow("task_circuit_broken");
+  });
+});
+
+describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
+  // resolveToolApproval's "approved" branch schedules
+  // internal.workerRunner.resumeWorkerTask via ctx.scheduler.runAfter(0, …).
+  // convex-test only runs scheduled functions on real wall-clock timers
+  // unless fake timers are active (see its own TestConvexForDataModel
+  // doc comment) — without this, that 0ms timer can fire later, against a
+  // since-torn-down test backend, and crash an unrelated later test with a
+  // "write outside of transaction" error. Fake timers keep it inert for
+  // these tests, which only assert resolveToolApproval's own direct
+  // effects, not resumeWorkerTask's (untestable here anyway — it's a "use
+  // node" action needing real E2B/LLM credentials, same boundary
+  // dispatcher.test.ts draws around runWorkerTask).
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function makeInProgressTask(t: ReturnType<typeof convexTest>, slug: string) {
+    const businessId = await makeBusiness(t, slug);
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: `${slug}:task-1`,
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+    });
+    await t.mutation(internal.agentTasks.beginWorkerRun, { businessId, taskId: task!._id });
+    return { businessId, taskId: task!._id };
+  }
+
+  it("requestToolApproval sets pendingApproval without changing status", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeInProgressTask(t, "approval-request-a");
+
+    const result = await t.mutation(internal.agentTasks.requestToolApproval, {
+      businessId,
+      taskId,
+      toolName: "run_shell",
+      argsSummary: '{"command":"rm -rf /tmp/x"}',
+    });
+
+    expect(result?.status).toBe("in_progress");
+    expect(result?.pendingApproval?.toolName).toBe("run_shell");
+    expect(result?.pendingApproval?.argsSummary).toBe('{"command":"rm -rf /tmp/x"}');
+  });
+
+  it("requestToolApproval rejects a task that is not in_progress", async () => {
+    const t = convexTest(schema, modules);
+    const businessId = await makeBusiness(t, "approval-request-b");
+    const task = await t.mutation(internal.agentTasks.dispatch, {
+      businessId,
+      title: "Task",
+      description: "...",
+      workerType: "coding",
+      dispatchKey: "approval-request-b:task-1",
+      instructions: "...",
+      containsUntrustedContent: false,
+      creditCost: 10,
+    });
+
+    await expect(
+      t.mutation(internal.agentTasks.requestToolApproval, {
+        businessId,
+        taskId: task!._id,
+        toolName: "run_shell",
+        argsSummary: "{}",
+      }),
+    ).rejects.toThrow("invalid_pending_approval_status:todo");
+  });
+
+  it("resolveToolApproval throws when there is nothing pending", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeInProgressTask(t, "approval-none-a");
+
+    await expect(
+      t.mutation(internal.agentTasks.resolveToolApproval, {
+        businessId,
+        taskId,
+        actor: "owner",
+        decision: "approved",
+      }),
+    ).rejects.toThrow("no_pending_approval");
+  });
+
+  it("approving clears pendingApproval, logs a typed decision event, and keeps the task in_progress", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeInProgressTask(t, "approval-approve-a");
+    await t.mutation(internal.agentTasks.requestToolApproval, {
+      businessId,
+      taskId,
+      toolName: "run_shell",
+      argsSummary: '{"command":"npm publish"}',
+    });
+
+    const result = await t.mutation(internal.agentTasks.resolveToolApproval, {
+      businessId,
+      taskId,
+      actor: "owner",
+      decision: "approved",
+    });
+
+    expect(result?.status).toBe("in_progress");
+    expect(result?.pendingApproval).toBeUndefined();
+
+    const events = await t.query(internal.agentEvents.listByTask, { businessId, taskId });
+    const decision = events.find((e) => e.event.kind === "tool_call_approval_decision");
+    expect(decision?.actor).toBe("owner");
+    expect(decision?.event.kind === "tool_call_approval_decision" && decision.event.decision).toBe(
+      "approved",
+    );
+    expect(decision?.event.kind === "tool_call_approval_decision" && decision.event.toolName).toBe(
+      "run_shell",
+    );
+  });
+
+  it("denying clears pendingApproval, logs the decision, and moves the task to needs_review", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeInProgressTask(t, "approval-deny-a");
+    await t.mutation(internal.agentTasks.requestToolApproval, {
+      businessId,
+      taskId,
+      toolName: "run_shell",
+      argsSummary: '{"command":"npm publish"}',
+    });
+
+    const result = await t.mutation(internal.agentTasks.resolveToolApproval, {
+      businessId,
+      taskId,
+      actor: "ceo",
+      decision: "denied",
+    });
+
+    expect(result?.status).toBe("needs_review");
+    expect(result?.pendingApproval).toBeUndefined();
+
+    const events = await t.query(internal.agentEvents.listByTask, { businessId, taskId });
+    const decision = events.find((e) => e.event.kind === "tool_call_approval_decision");
+    expect(decision?.event.kind === "tool_call_approval_decision" && decision.event.decision).toBe(
+      "denied",
+    );
+    const statusChange = events.find(
+      (e) => e.event.kind === "status_change" && e.event.toStatus === "needs_review",
+    );
+    expect(statusChange?.actor).toBe("ceo");
+  });
+
+  it("a retried resolveToolApproval call after the first one lands throws instead of double-deciding", async () => {
+    const t = convexTest(schema, modules);
+    const { businessId, taskId } = await makeInProgressTask(t, "approval-retry-a");
+    await t.mutation(internal.agentTasks.requestToolApproval, {
+      businessId,
+      taskId,
+      toolName: "run_shell",
+      argsSummary: "{}",
+    });
+    await t.mutation(internal.agentTasks.resolveToolApproval, {
+      businessId,
+      taskId,
+      actor: "owner",
+      decision: "approved",
+    });
+
+    await expect(
+      t.mutation(internal.agentTasks.resolveToolApproval, {
+        businessId,
+        taskId,
+        actor: "owner",
+        decision: "approved",
+      }),
+    ).rejects.toThrow("no_pending_approval");
   });
 });

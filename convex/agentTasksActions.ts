@@ -130,3 +130,33 @@ export const recordAttemptFailure = action({
     return ctx.runMutation(internal.agentTasks.recordAttemptFailure, args);
   },
 });
+
+export const requestToolApproval = action({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+    toolName: v.string(),
+    argsSummary: v.string(),
+    secret: v.string(),
+  },
+  handler: async (ctx, { secret, ...args }): Promise<Doc<"agentTasks"> | null> => {
+    assertServiceSecret(secret);
+    return ctx.runMutation(internal.agentTasks.requestToolApproval, args);
+  },
+});
+
+// The real external entry point for a human owner/CEO decision on a gated
+// destructive tool call — see agentTasks.resolveToolApproval.
+export const resolveToolApproval = action({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+    actor: v.union(v.literal("owner"), v.literal("ceo")),
+    decision: v.union(v.literal("approved"), v.literal("denied")),
+    secret: v.string(),
+  },
+  handler: async (ctx, { secret, ...args }): Promise<Doc<"agentTasks"> | null> => {
+    assertServiceSecret(secret);
+    return ctx.runMutation(internal.agentTasks.resolveToolApproval, args);
+  },
+});

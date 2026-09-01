@@ -148,6 +148,30 @@ export function assertToolAllowed(workerType: WorkerType, toolName: string): voi
   }
 }
 
+// THI-66: tool calls whose blast radius reaches past a worker's declared,
+// narrow surface — file writes outside the ephemeral sandbox workspace,
+// payments, sends to external systems — get a human-in-the-loop approval
+// gate before they execute, distinct from the end-of-task needs_review gate
+// (see convex/agentTasks.ts's requestToolApproval/resolveToolApproval).
+// Only `run_shell` qualifies today: it's the one registered tool with
+// genuinely open-ended reach (arbitrary shell + the sandbox's network
+// egress can touch anything an external send or payment call would).
+// Every other tool stays inside its own bounded, reversible action:
+// read_file/write_file/list_directory resolve inside WORKSPACE_ROOT only
+// (resolveWorkspacePath rejects escapes); navigate/click/read_page_text are
+// read-only browser actions bounded by the navigate SSRF guard above;
+// read_context_file/submit_draft touch nothing external. Extend this set
+// the moment a tool that does reach payments or an external send is added.
+const DESTRUCTIVE_TOOLS: Record<WorkerType, ReadonlySet<string>> = {
+  coding: new Set(["run_shell"]),
+  browser: new Set(),
+  marketing: new Set(),
+};
+
+export function isDestructiveToolCall(workerType: WorkerType, toolName: string): boolean {
+  return DESTRUCTIVE_TOOLS[workerType].has(toolName);
+}
+
 export interface ToolExecutionContext {
   sandbox?: SandboxHandle | null;
   readContextFile?: (fileKey: string) => Promise<string | null>;
