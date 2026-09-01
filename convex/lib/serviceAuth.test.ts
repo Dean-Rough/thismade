@@ -33,4 +33,20 @@ describe("assertServiceSecret", () => {
     delete process.env.CONVEX_SERVICE_SECRET;
     expect(() => assertServiceSecret("anything")).toThrow("service_secret_not_configured");
   });
+
+  it("accepts a multi-byte secret and rejects a near-miss of it", () => {
+    process.env.CONVEX_SERVICE_SECRET = "sécret-🔒-日本語";
+    expect(() => assertServiceSecret("sécret-🔒-日本語")).not.toThrow();
+    expect(() => assertServiceSecret("secret-🔒-日本語")).toThrow("unauthorized");
+  });
+
+  it("rejects a lone surrogate that a byte-level compare would wrongly accept", () => {
+    // TextEncoder replaces any unpaired surrogate with U+FFFD, so a
+    // byte-level (UTF-8) compare of "\uD800" against a literal U+FFFD
+    // secret would have falsely matched. Comparing UTF-16 code units
+    // directly must reject it.
+    process.env.CONVEX_SERVICE_SECRET = "�";
+    expect(() => assertServiceSecret("\uD800")).toThrow("unauthorized");
+    expect(() => assertServiceSecret("�")).not.toThrow();
+  });
 });

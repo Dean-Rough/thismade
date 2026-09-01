@@ -15,17 +15,17 @@
 // (as used by the storefront's own copy, see THI-61) would need `await` added
 // at every call site, and any call added later without it would silently skip
 // the check (a rejected promise the caller never observes). To stay a
-// drop-in, call-site-compatible fix, the compare stays synchronous: encode
-// both values to bytes and XOR-accumulate over the longer length so the
-// number of operations never depends on where — or whether — they diverge.
+// drop-in, call-site-compatible fix, the compare stays synchronous: compare
+// UTF-16 code units directly (not UTF-8 bytes — TextEncoder collapses
+// unpaired surrogates to U+FFFD, which would make some unequal strings compare
+// equal) over the longer length, so the number of operations never depends on
+// where they diverge. It does still depend on the longer string's *length*,
+// which is fine for a fixed, high-entropy, non-attacker-chosen secret.
 function timingSafeEqual(a: string, b: string): boolean {
-  const encoder = new TextEncoder();
-  const aBytes = encoder.encode(a);
-  const bBytes = encoder.encode(b);
-  const length = Math.max(aBytes.length, bBytes.length);
-  let diff = aBytes.length === bBytes.length ? 0 : 1;
+  const length = Math.max(a.length, b.length);
+  let diff = a.length === b.length ? 0 : 1;
   for (let i = 0; i < length; i++) {
-    diff |= (aBytes[i] ?? 0) ^ (bBytes[i] ?? 0);
+    diff |= (a.charCodeAt(i) | 0) ^ (b.charCodeAt(i) | 0);
   }
   return diff === 0;
 }
