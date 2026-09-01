@@ -401,8 +401,18 @@ async function validateNavigationUrl(
 // matched quoted span, so an embedded `>` inside a validly-quoted value (the
 // original Finding 2 case) is still handled atomically by the quoted
 // alternatives, which are tried first.
+// THI-84: that same widening reintroduced ambiguity the old `[^'">]`
+// alternative didn't have - a `"` is now matchable by either the quoted-span
+// branch or the widened catch-all, and when no `>` is reachable later in the
+// string, the engine backtracks through every combination of that choice
+// before failing (catastrophic backtracking, confirmed exponential:
+// ~1.6x per additional quote character, unusable past ~30). Wrapping the
+// repetition in a lookahead + backreference (`(?=(...))\1`) emulates an
+// atomic group: the greedy match runs once inside the lookahead with no
+// ability to backtrack into it from outside, so a non-matching tail fails
+// fast instead of retrying every quote-treatment combination.
 export function stripSpeculativeLinkTags(html: string): string {
-  return html.replace(/<link\b(?:"[^"]*"|'[^']*'|[^>])*>/gi, (tag) => {
+  return html.replace(/<link\b(?=((?:"[^"]*"|'[^']*'|[^>])*))\1>/gi, (tag) => {
     const attrPattern = /([a-zA-Z][-a-zA-Z0-9]*)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g;
     let attrMatch: RegExpExecArray | null;
     while ((attrMatch = attrPattern.exec(tag))) {
@@ -654,8 +664,12 @@ async function pinHostname(hostname, existingRules) {
 //      check against) whether it surfaces as a Network-domain event the way
 //      an ordinary fetch does - closed via the same stripSpeculativeLinkTags
 //      rewrite regardless of the answer.
+// THI-84: lookahead+backreference emulates an atomic group around the
+// repetition, closing a catastrophic-backtracking regression the THI-82
+// widening introduced (see the Node-side stripSpeculativeLinkTags mirror's
+// module-level comment for the full explanation - same regex, hand-copied).
 function stripSpeculativeLinkTags(html) {
-  return html.replace(/<link\\b(?:"[^"]*"|'[^']*'|[^>])*>/gi, (tag) => {
+  return html.replace(/<link\\b(?=((?:"[^"]*"|'[^']*'|[^>])*))\\1>/gi, (tag) => {
     const attrPattern = /([a-zA-Z][-a-zA-Z0-9]*)\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)/g;
     let attrMatch;
     while ((attrMatch = attrPattern.exec(tag))) {
@@ -896,8 +910,14 @@ async function navigateWithPinning(targetUrl, rules) {
       // the tag match early, and a decoy attribute whose value contained the
       // text "rel=" could hide a later real one from a single first-match
       // regex).
+      //
+      // THI-84: same lookahead+backreference atomic-group fix as the other
+      // two mirrors, closing the THI-82 widening's catastrophic-backtracking
+      // regression (this closure runs in the page's own JS realm on
+      // attacker-influenced innerHTML/document.write input, so it's exposed
+      // to the same DoS as the body-rewrite mirror above).
       function stripSpeculativeLinkMarkup(html) {
-        return String(html == null ? "" : html).replace(/<link\\b(?:"[^"]*"|'[^']*'|[^>])*>/gi, (tag) => {
+        return String(html == null ? "" : html).replace(/<link\\b(?=((?:"[^"]*"|'[^']*'|[^>])*))\\1>/gi, (tag) => {
           const attrPattern = /([a-zA-Z][-a-zA-Z0-9]*)\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)/g;
           let attrMatch;
           while ((attrMatch = attrPattern.exec(tag))) {

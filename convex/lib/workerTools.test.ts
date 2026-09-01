@@ -432,6 +432,17 @@ describe("BROWSER_DRIVER_SCRIPT addInitScript link guard, executed against the a
     expect(stripSpeculativeLinkMarkup('<link rel=preconnect href=fo"o>')).not.toContain("preconnect");
     expect(stripSpeculativeLinkMarkup("<link rel=preconnect href=abc'def>")).not.toContain("preconnect");
   });
+
+  // THI-84: see the equivalent Node-side test above for the root cause. This
+  // closure runs in the page's own JS realm on attacker-influenced
+  // innerHTML/document.write input, so it carries the same DoS exposure.
+  it("does not exhibit catastrophic backtracking on a run of unquoted quote characters with no reachable '>'", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const html = "<html><head><link rel=preconnect href=" + '"'.repeat(60) + "x".repeat(200);
+    const start = Date.now();
+    stripSpeculativeLinkMarkup(html);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
 });
 
 describe("BROWSER_DRIVER_SCRIPT allowRequest body-rewrite mirror, executed against the actual shipped text (THI-81)", () => {
@@ -459,6 +470,17 @@ describe("BROWSER_DRIVER_SCRIPT allowRequest body-rewrite mirror, executed again
     const strip = loadBodyRewriteMirror();
     expect(strip('<link rel=preconnect href=fo"o>')).not.toContain("preconnect");
     expect(strip("<link rel=preconnect href=abc'def>")).not.toContain("preconnect");
+  });
+
+  // THI-84: this is the live production path (route.fulfill's body rewrite,
+  // running on the literal HTTP response body of any page navigate()
+  // visits) - see the equivalent Node-side test above for the root cause.
+  it("does not exhibit catastrophic backtracking on a run of unquoted quote characters with no reachable '>'", () => {
+    const strip = loadBodyRewriteMirror();
+    const html = "<html><head><link rel=preconnect href=" + '"'.repeat(60) + "x".repeat(200);
+    const start = Date.now();
+    strip(html);
+    expect(Date.now() - start).toBeLessThan(500);
   });
 });
 
@@ -597,5 +619,18 @@ describe("stripSpeculativeLinkTags (THI-75)", () => {
   it("strips a link tag even when an unquoted attribute value contains an unmatched literal quote character", () => {
     expect(stripSpeculativeLinkTags('<link rel=preconnect href=fo"o>')).not.toContain("preconnect");
     expect(stripSpeculativeLinkTags("<link rel=preconnect href=abc'def>")).not.toContain("preconnect");
+  });
+
+  // THI-84: the THI-82 widening (`[^'">]` -> `[^>]`) reintroduced ambiguity
+  // between the quoted-span branch and the catch-all - when no `>` is
+  // reachable later in the string, the engine used to backtrack through
+  // every quote-treatment combination before failing (confirmed exponential:
+  // ~1.6x per additional quote character, unusable past ~30). The
+  // lookahead+backreference atomic-group emulation keeps this flat.
+  it("does not exhibit catastrophic backtracking on a run of unquoted quote characters with no reachable '>'", () => {
+    const html = "<html><head><link rel=preconnect href=" + '"'.repeat(60) + "x".repeat(200);
+    const start = Date.now();
+    stripSpeculativeLinkTags(html);
+    expect(Date.now() - start).toBeLessThan(500);
   });
 });
