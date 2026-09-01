@@ -1,7 +1,12 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 
-export const record = mutation({
+// THI-53: internal-only (unreachable from the public Convex HTTP API) so
+// that the HMAC boundary in app/api/fulfillment/route.ts and the /admin JWT
+// gate remain the only ways in. Public entry points live in
+// fulfillmentEventsActions.ts, gated by the shared secret in
+// convex/lib/serviceAuth.ts.
+export const record = internalMutation({
   args: {
     externalOrderId: v.string(),
     payload: v.string(),
@@ -27,7 +32,7 @@ export const record = mutation({
   },
 });
 
-export const list = query({
+export const list = internalQuery({
   args: {},
   handler: async (ctx) => {
     return ctx.db.query("fulfillmentEvents").order("desc").take(50);

@@ -8,18 +8,24 @@
 //   1. Copies storefront-template/ into a new sibling repo (default:
 //      ../thismade-storefronts/<slug>, next to this platform checkout).
 //   2. Substitutes __BUSINESS_NAME__ / __BUSINESS_SLUG__ placeholders.
-//   3. Generates fresh, per-business ADMIN_JWT_SECRET and
-//      FULFILLMENT_HMAC_SECRET values into a gitignored .env.local.
+//   3. Generates fresh, per-business ADMIN_JWT_SECRET, FULFILLMENT_HMAC_SECRET,
+//      and CONVEX_SERVICE_SECRET values into a gitignored .env.local.
 //   4. Runs `npm install` and Convex codegen with the ambient
 //      CONVEX_DEPLOY_KEY/CONVEX_DEPLOYMENT/NEXT_PUBLIC_CONVEX_URL stripped
 //      from the child process env — those vars, if inherited, would point
 //      at the *platform's own* shared Convex deployment, not a deployment
 //      for this business. See storefront-template/README.md.
-//   5. Runs the build/typecheck/test gate (`npm run gate`, defined in
+//   5. Sets CONVEX_SERVICE_SECRET as an environment variable *on* the
+//      freshly provisioned Convex deployment itself (`convex env set`) — the
+//      value in .env.local is what the Next.js server presents; the
+//      deployment needs its own copy to check incoming calls against (THI-53,
+//      convex/lib/serviceAuth.ts). Without this step every fulfillmentEvents
+//      action would reject with service_secret_not_configured.
+//   6. Runs the build/typecheck/test gate (`npm run gate`, defined in
 //      storefront-template/package.json). Every future coding-agent edit to
 //      a generated storefront must pass this same gate before it commits —
-//      this script's step 6 is the reference implementation of that rule.
-//   6. Only on a fully green gate: `git init` + one commit. A failing gate
+//      this script's step 7 is the reference implementation of that rule.
+//   7. Only on a fully green gate: `git init` + one commit. A failing gate
 //      aborts with a non-zero exit and no commit is made.
 //   7. Deploys to Vercel and registers {slug}.storefronts.rough.ink as the
 //      production domain (scripts/deploy-storefront.mjs). Pass --skip-deploy
@@ -108,8 +114,12 @@ function substituteTokensInPlace(dir, tokens) {
   }
 }
 
-function run(command, args, cwd, env) {
-  console.log(`\n$ ${command} ${args.join(" ")}  (cwd: ${cwd})`);
+export function run(command, args, cwd, env, { redactArgAt } = {}) {
+  const shown =
+    redactArgAt == null
+      ? args
+      : args.map((arg, i) => (i === redactArgAt ? "<redacted>" : arg));
+  console.log(`\n$ ${command} ${shown.join(" ")}  (cwd: ${cwd})`);
   execFileSync(command, args, { cwd, env, stdio: "inherit" });
 }
 
@@ -147,12 +157,14 @@ function main() {
 
   const adminSecret = randomBytes(32).toString("hex");
   const fulfillmentSecret = randomBytes(32).toString("hex");
+  const convexServiceSecret = randomBytes(32).toString("hex");
   writeFileSync(
     path.join(outDir, ".env.local"),
     [
       `BUSINESS_SLUG=${args.slug}`,
       `ADMIN_JWT_SECRET=${adminSecret}`,
       `FULFILLMENT_HMAC_SECRET=${fulfillmentSecret}`,
+      `CONVEX_SERVICE_SECRET=${convexServiceSecret}`,
       "# CONVEX_DEPLOYMENT / NEXT_PUBLIC_CONVEX_URL are appended below by the",
       "# local anonymous Convex backend this script provisions next (dev/test",
       "# only — it's not reachable once deployed; see README.md 'Known gap').",
@@ -172,6 +184,16 @@ function main() {
     outDir,
     { ...env, CONVEX_AGENT_MODE: "anonymous" },
   );
+  // THI-53: give the deployment itself a copy of the secret its actions
+  // check (convex/lib/serviceAuth.ts) — the .env.local copy above is only
+  // what the Next.js server presents when calling in.
+  run(
+    "npx",
+    ["convex", "env", "set", "CONVEX_SERVICE_SECRET", convexServiceSecret],
+    outDir,
+    { ...env, CONVEX_AGENT_MODE: "anonymous" },
+    { redactArgAt: 4 },
+  );
   run("npm", ["run", "gate"], outDir, env);
 
   run("git", ["init", "-q"], outDir, env);
@@ -189,7 +211,7 @@ function main() {
   );
 
   console.log(`\nDone. Storefront repo ready at: ${outDir}`);
-  console.log(`Admin secret and fulfillment secret were generated fresh and written to ${outDir}/.env.local (gitignored).`);
+  console.log(`Admin, fulfillment, and Convex service secrets were generated fresh and written to ${outDir}/.env.local (gitignored).`);
 
   if (args.skipDeploy) {
     console.log(`\n--skip-deploy passed; not deploying. Run scripts/deploy-storefront.mjs --slug ${args.slug} later to publish.`);
@@ -204,4 +226,6 @@ function main() {
   );
 }
 
-main();
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main();
+}

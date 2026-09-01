@@ -63,11 +63,23 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, recorded: false, reason: "convex_not_configured" });
   }
 
+  const serviceSecret = process.env.CONVEX_SERVICE_SECRET;
+  if (!serviceSecret) {
+    // Fail closed (THI-53): fulfillmentEvents.record is internal-only and
+    // reachable only through fulfillmentEventsActions.record, which requires
+    // this secret. A live Convex deployment must never be called without it.
+    return NextResponse.json(
+      { error: { code: "not_configured", message: "Convex service secret is not configured" } },
+      { status: 500 },
+    );
+  }
+
   try {
     const client = new ConvexHttpClient(convexUrl);
-    await client.mutation(api.fulfillmentEvents.record, {
+    await client.action(api.fulfillmentEventsActions.record, {
       externalOrderId: parsed.externalOrderId,
       payload: rawBody,
+      secret: serviceSecret,
     });
     return NextResponse.json({ ok: true, recorded: true });
   } catch (error) {

@@ -19,15 +19,18 @@ function postRequest(body: string, signature: string | null): NextRequest {
 describe("POST /api/fulfillment", () => {
   const originalSecret = process.env.FULFILLMENT_HMAC_SECRET;
   const originalConvexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+  const originalServiceSecret = process.env.CONVEX_SERVICE_SECRET;
 
   beforeEach(() => {
     process.env.FULFILLMENT_HMAC_SECRET = SECRET;
     delete process.env.NEXT_PUBLIC_CONVEX_URL;
+    delete process.env.CONVEX_SERVICE_SECRET;
   });
 
   afterEach(() => {
     process.env.FULFILLMENT_HMAC_SECRET = originalSecret;
     process.env.NEXT_PUBLIC_CONVEX_URL = originalConvexUrl;
+    process.env.CONVEX_SERVICE_SECRET = originalServiceSecret;
   });
 
   it("rejects a request with no signature header", async () => {
@@ -55,5 +58,14 @@ describe("POST /api/fulfillment", () => {
     const signature = await signFulfillmentPayload(BODY, SECRET);
     const response = await POST(postRequest(BODY, signature));
     expect(response.status).toBe(500);
+  });
+
+  it("fails closed when Convex is configured but the service secret is not (THI-53)", async () => {
+    process.env.NEXT_PUBLIC_CONVEX_URL = "https://example.convex.cloud";
+    const signature = await signFulfillmentPayload(BODY, SECRET);
+    const response = await POST(postRequest(BODY, signature));
+    expect(response.status).toBe(500);
+    const json = await response.json();
+    expect(json.error.code).toBe("not_configured");
   });
 });
