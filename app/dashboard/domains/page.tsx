@@ -6,8 +6,6 @@ export const dynamic = "force-dynamic";
 
 // THI-14 Part 4.9: list connected domains with DNS-record status, an
 // add-domain flow that shows the exact records to add, and a verify action.
-// fetchDomains always returns [] until THI-92's Convex domains table/actions
-// ship — see THI-18's `spec` document for the full contract.
 export default async function DomainsPage() {
   const businessId = await resolveDashboardBusinessId();
   const domains = await fetchDomains(businessId);

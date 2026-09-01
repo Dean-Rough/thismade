@@ -15,17 +15,7 @@ const STATUS_TONE = {
   failed: "text-confirmation-rejected",
 } as const;
 
-// "not yet available" (THI-92 hasn't shipped) is a distinct condition from a
-// transient failure — telling someone to "try again" when retrying can never
-// help would be a lie, so this message names the real reason instead of
-// reusing the generic retry copy other dashboard actions use.
-const BACKEND_NOT_READY_MESSAGE =
-  "Domain connections aren't wired up yet — the backend for this is still in progress.";
-
 function errorMessage(err: unknown, fallback: string): string {
-  if (err instanceof Error && err.message === "domains_backend_not_yet_available") {
-    return BACKEND_NOT_READY_MESSAGE;
-  }
   if (err instanceof Error && err.message === "invalid_hostname") {
     return "That doesn't look like a valid domain — try something like store.example.com.";
   }

@@ -1,5 +1,8 @@
 import "server-only";
-import type { Id } from "@/convex/_generated/dataModel";
+import { api } from "@/convex/_generated/api";
+import type { Doc, Id } from "@/convex/_generated/dataModel";
+import { getDashboardConvexClient } from "./dashboardConvex";
+import { getConvexServiceSecret } from "./serviceSecret";
 
 export type DomainStatus = "pending" | "verified" | "failed";
 
@@ -13,26 +16,40 @@ export type Domain = {
   createdAt: number;
 };
 
-// THI-92 tracks the Convex `domains` table + domainsActions (listByBusiness/
-// addDomain/verifyDomain) this file should call — see THI-18's `spec`
-// document for the exact contract. That table does not exist yet, so there
-// is nothing to query: this returns an empty list rather than guessing at a
-// shape, which the dashboard renders as the same "no domains yet" empty
-// state a real zero-domains business would see. Swap the three functions
-// below for real ConvexHttpClient calls (matching dashboardFiles.ts's
-// shape) once THI-92 ships — no caller above this file should need to
-// change.
-export async function fetchDomains(_businessId: Id<"businesses">): Promise<Domain[]> {
-  return [];
+function toDomain(doc: Doc<"domains">): Domain {
+  return {
+    id: doc._id,
+    hostname: doc.hostname,
+    status: doc.status,
+    records: doc.records,
+    createdAt: doc.createdAt,
+  };
+}
+
+export async function fetchDomains(businessId: Id<"businesses">): Promise<Domain[]> {
+  const client = getDashboardConvexClient();
+  const secret = getConvexServiceSecret();
+  const domains = await client.action(api.domainsActions.listByBusiness, { businessId, secret });
+  return domains.map(toDomain);
 }
 
 export async function addDomain(
-  _businessId: Id<"businesses">,
-  _hostname: string,
+  businessId: Id<"businesses">,
+  hostname: string,
 ): Promise<{ records: DnsRecord[] }> {
-  throw new Error("domains_backend_not_yet_available");
+  const client = getDashboardConvexClient();
+  const secret = getConvexServiceSecret();
+  const domain = await client.action(api.domainsActions.addDomain, { businessId, hostname, secret });
+  return { records: domain.records };
 }
 
-export async function verifyDomain(_businessId: Id<"businesses">, _domainId: string): Promise<Domain> {
-  throw new Error("domains_backend_not_yet_available");
+export async function verifyDomain(businessId: Id<"businesses">, domainId: string): Promise<Domain> {
+  const client = getDashboardConvexClient();
+  const secret = getConvexServiceSecret();
+  const domain = await client.action(api.domainsActions.verifyDomain, {
+    businessId,
+    domainId: domainId as Id<"domains">,
+    secret,
+  });
+  return toDomain(domain);
 }

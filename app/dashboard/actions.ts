@@ -74,11 +74,6 @@ export async function markTaskDoneAction(taskId: Id<"agentTasks">): Promise<void
   revalidateDashboard();
 }
 
-// THI-18: addDomain/verifyDomain (lib/api/dashboardDomains.ts) currently
-// throw "domains_backend_not_yet_available" — see THI-92 for the Convex
-// `domains` table/actions these will call once built. The actions here are
-// otherwise complete (auth-gated, validated, revalidating) so THI-92 landing
-// only requires swapping those two functions' bodies, not this file.
 export async function addDomainAction(hostname: string): Promise<{ records: DnsRecord[] }> {
   await assertDashboardAccess();
   const trimmed = hostname.trim().toLowerCase();
