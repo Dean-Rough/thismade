@@ -27,6 +27,10 @@
 //      this script's step 7 is the reference implementation of that rule.
 //   7. Only on a fully green gate: `git init` + one commit. A failing gate
 //      aborts with a non-zero exit and no commit is made.
+//   7. Deploys to Vercel and registers {slug}.storefronts.rough.ink as the
+//      production domain (scripts/deploy-storefront.mjs). Pass --skip-deploy
+//      to scaffold without deploying, e.g. in an environment with no Vercel
+//      CLI session.
 
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -52,13 +56,14 @@ const EXCLUDED_SUFFIXES = [".tsbuildinfo"];
 const EXCLUDED_RELATIVE_PATHS = new Set(["convex/_generated"]);
 
 function parseArgs(argv) {
-  const args = { force: false };
+  const args = { force: false, skipDeploy: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--slug") args.slug = argv[++i];
     else if (arg === "--name") args.name = argv[++i];
     else if (arg === "--out") args.out = argv[++i];
     else if (arg === "--force") args.force = true;
+    else if (arg === "--skip-deploy") args.skipDeploy = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!args.slug) throw new Error("--slug is required");
@@ -207,6 +212,18 @@ function main() {
 
   console.log(`\nDone. Storefront repo ready at: ${outDir}`);
   console.log(`Admin, fulfillment, and Convex service secrets were generated fresh and written to ${outDir}/.env.local (gitignored).`);
+
+  if (args.skipDeploy) {
+    console.log(`\n--skip-deploy passed; not deploying. Run scripts/deploy-storefront.mjs --slug ${args.slug} later to publish.`);
+    return;
+  }
+
+  run(
+    "node",
+    [path.join(SCRIPT_DIR, "deploy-storefront.mjs"), "--slug", args.slug, "--dir", outDir],
+    REPO_ROOT,
+    env,
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
