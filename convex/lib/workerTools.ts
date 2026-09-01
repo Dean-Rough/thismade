@@ -374,14 +374,29 @@ async function validateNavigationUrl(
 // the mirror of this exact function ships as JS text inside
 // BROWSER_DRIVER_SCRIPT below (same "can't import this module from inside
 // the sandbox" reason as isBlockedIpv4/isBlockedIpv6).
+// THI-81 Finding 2: the previous `[^>]*` tag matcher didn't understand HTML
+// attribute quoting, so a literal `>` inside a quoted attribute value
+// (placed before rel=) ended the match early and the truncated tag never
+// contained "rel=", making this a silent no-op. The quote-aware alternation
+// below treats a quoted value as one atomic unit (matching Chromium's actual
+// tokenizer behavior for this case) so an embedded `>` can't end the tag
+// early. That same "search for the first rel= substring anywhere in the
+// tag" approach also let an earlier decoy attribute whose *value* happens to
+// contain the text "rel=" hide a later real rel attribute from the old
+// single-match regex; scanning every attribute in sequence (each consumed as
+// an atomic name=value unit, so a decoy's quoted value can never be
+// mistaken for a separate attribute) and blocking if any of them is a real
+// rel="preconnect|dns-prefetch" closes that too.
 export function stripSpeculativeLinkTags(html: string): string {
-  return html.replace(/<link\b[^>]*>/gi, (tag) => {
-    const relMatch = tag.match(/\brel\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i);
-    if (!relMatch) return tag;
-    const relValue = relMatch[1].replace(/^["']|["']$/g, "").toLowerCase();
-    const relTokens = relValue.split(/\s+/).filter(Boolean);
-    if (relTokens.includes("preconnect") || relTokens.includes("dns-prefetch")) {
-      return "<!-- thismade: stripped speculative link -->";
+  return html.replace(/<link\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi, (tag) => {
+    const attrPattern = /([a-zA-Z][-a-zA-Z0-9]*)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g;
+    let attrMatch: RegExpExecArray | null;
+    while ((attrMatch = attrPattern.exec(tag))) {
+      if (attrMatch[1].toLowerCase() !== "rel") continue;
+      const relValue = attrMatch[2].replace(/^["']|["']$/g, "");
+      if (hasBlockedLinkRel(relValue)) {
+        return "<!-- thismade: stripped speculative link -->";
+      }
     }
     return tag;
   });
@@ -626,13 +641,16 @@ async function pinHostname(hostname, existingRules) {
 //      an ordinary fetch does - closed via the same stripSpeculativeLinkTags
 //      rewrite regardless of the answer.
 function stripSpeculativeLinkTags(html) {
-  return html.replace(/<link\\b[^>]*>/gi, (tag) => {
-    const relMatch = tag.match(/\\brel\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)/i);
-    if (!relMatch) return tag;
-    const relValue = relMatch[1].replace(/^["']|["']$/g, "").toLowerCase();
-    const relTokens = relValue.split(/\\s+/).filter(Boolean);
-    if (relTokens.includes("preconnect") || relTokens.includes("dns-prefetch")) {
-      return "<!-- thismade: stripped speculative link -->";
+  return html.replace(/<link\\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi, (tag) => {
+    const attrPattern = /([a-zA-Z][-a-zA-Z0-9]*)\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)/g;
+    let attrMatch;
+    while ((attrMatch = attrPattern.exec(tag))) {
+      if (attrMatch[1].toLowerCase() !== "rel") continue;
+      const relValue = attrMatch[2].replace(/^["']|["']$/g, "").toLowerCase();
+      const relTokens = relValue.split(/\\s+/).filter(Boolean);
+      if (relTokens.includes("preconnect") || relTokens.includes("dns-prefetch")) {
+        return "<!-- thismade: stripped speculative link -->";
+      }
     }
     return tag;
   });
@@ -834,12 +852,45 @@ async function navigateWithPinning(targetUrl, rules) {
       // module-level comment for why a shared import isn't possible across
       // this boundary) because this one has to live inside the
       // addInitScript closure, not the script's Node-side top level.
+      // THI-81 follow-up (found while fixing THI-81's two reported findings,
+      // not itself reported by that review): this whole addInitScript
+      // callback is plain text inside BROWSER_DRIVER_SCRIPT's outer template
+      // literal, not real JS re-parsed by this file's own compiler - it only
+      // becomes executable once written out to the sandbox's .mjs file - so
+      // every backslash below goes through the SAME string-escape cooking as
+      // the top-level stripSpeculativeLinkTags mirror above and must be
+      // doubled to survive as a literal backslash in the shipped text. The
+      // two regexes here previously used single backslashes (\b, \s): \b is
+      // a *defined* string escape (backspace, U+0008) so it silently cooked
+      // into an actual backspace byte instead of surviving as "\" + "b", and
+      // \s isn't a defined string escape at all so the backslash was
+      // silently dropped, leaving a bare "s". The tag matcher below was
+      // therefore requiring a literal backspace character right after
+      // "link", which never occurs in real HTML - making this entire
+      // DOM-injection guard (innerHTML/outerHTML/insertAdjacentHTML/
+      // document.write/writeln, all below) a silent no-op for every real
+      // input, never caught by the existing tests because they only assert
+      // BROWSER_DRIVER_SCRIPT.toContain(...) on literal source substrings or
+      // run node --check (syntax validity, not behavior) - see the
+      // extraction-and-execute tests added alongside this fix in
+      // workerTools.test.ts, which run this exact shipped text and would
+      // have caught it immediately.
+      //
+      // THI-81 Finding 2: also switched to the same quote-aware tag matcher
+      // and attribute-level rel scan as the top-level mirror, for the same
+      // reason (a literal ">" inside a quoted attribute value used to end
+      // the tag match early, and a decoy attribute whose value contained the
+      // text "rel=" could hide a later real one from a single first-match
+      // regex).
       function stripSpeculativeLinkMarkup(html) {
-        return String(html == null ? "" : html).replace(/<link\b[^>]*>/gi, (tag) => {
-          const relMatch = tag.match(/\brel\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/i);
-          if (!relMatch) return tag;
-          if (hasBlockedLinkRel(relMatch[1].replace(/^["']|["']$/g, ""))) {
-            return "<!-- thismade: stripped speculative link -->";
+        return String(html == null ? "" : html).replace(/<link\\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi, (tag) => {
+          const attrPattern = /([a-zA-Z][-a-zA-Z0-9]*)\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)/g;
+          let attrMatch;
+          while ((attrMatch = attrPattern.exec(tag))) {
+            if (attrMatch[1].toLowerCase() !== "rel") continue;
+            if (hasBlockedLinkRel(attrMatch[2].replace(/^["']|["']$/g, ""))) {
+              return "<!-- thismade: stripped speculative link -->";
+            }
           }
           return tag;
         });
@@ -872,8 +923,18 @@ async function navigateWithPinning(targetUrl, rules) {
       for (const method of ["write", "writeln"]) {
         try {
           const original = Document.prototype[method];
+          // THI-81 Finding 1: document.write/writeln concatenate every
+          // argument into one string before the HTML parser ever sees it
+          // (per spec). Sanitizing each argument independently - the
+          // previous per-argument .map() sanitize call - let a page
+          // split a <link rel=preconnect> tag across the call boundary
+          // (e.g. write('<link rel="preconnect" href="...">'.slice(0, -1),
+          // ">")) so no single argument ever contained a complete tag for
+          // the regex to match, then the native concatenation reassembled
+          // the unstripped tag anyway. Joining first, matching the native
+          // concatenation step, then sanitizing once closes that.
           Document.prototype[method] = function (...methodArgs) {
-            return original.apply(this, methodArgs.map(stripSpeculativeLinkMarkup));
+            return original.call(this, stripSpeculativeLinkMarkup(methodArgs.map(String).join("")));
           };
         } catch (err) {
           console.error(diagToken + ": failed to patch Document.prototype." + method + ": " + (err && err.message ? err.message : String(err)));

@@ -308,6 +308,17 @@ describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
     expect(BROWSER_DRIVER_SCRIPT).toContain("Document.prototype[method]");
   });
 
+  // THI-81 Finding 1: document.write/writeln concatenate every argument into
+  // one string before parsing (per spec) - sanitizing each argument
+  // independently let a page split a <link rel=preconnect> tag across the
+  // call boundary so no single argument ever contained a complete tag.
+  // Assert the shipped text joins arguments before sanitizing once, and no
+  // longer contains the old per-argument-map pattern.
+  it("joins document.write/writeln arguments before sanitizing, instead of sanitizing each argument independently", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain('stripSpeculativeLinkMarkup(methodArgs.map(String).join(""))');
+    expect(BROWSER_DRIVER_SCRIPT).not.toContain("methodArgs.map(stripSpeculativeLinkMarkup)");
+  });
+
   // THI-80 Finding 2: the page-console diagnostic relay used to match on the
   // static literal "thismade:", which any navigated page could forge itself
   // via console.error, spoofing a "trusted" diagnostic or drowning real ones
@@ -322,6 +333,118 @@ describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
     expect(BROWSER_DRIVER_SCRIPT).toContain("}, DIAG_TOKEN);");
     expect(BROWSER_DRIVER_SCRIPT).toContain("text.indexOf(DIAG_TOKEN) === 0");
     expect(BROWSER_DRIVER_SCRIPT).not.toContain('text.indexOf("thismade:") === 0');
+  });
+});
+
+// THI-81 follow-up: every check above only asserts that a literal source
+// substring is present in BROWSER_DRIVER_SCRIPT, or (for the
+// "is syntactically valid ES module source" test) that the shipped text
+// parses - neither actually executes the addInitScript closure's link-guard
+// logic. That gap let a real bug ship silently: the closure's regexes are
+// plain text inside the outer template literal (not re-parsed as real JS by
+// this file's own compiler), so a single-backslash \b/\s in that text goes
+// through ordinary string-escape cooking - \b silently becomes an actual
+// backspace byte (a defined string escape) and \s silently drops its
+// backslash (not a defined string escape) - corrupting the regex into
+// something that can never match real HTML, while every existing check above
+// still passed. These tests extract the actual shipped function text from
+// the evaluated BROWSER_DRIVER_SCRIPT string (the same string a real
+// worker's Node process would execute) and run it directly, so a future
+// escaping slip in this region fails here instead of only surfacing as a
+// live worker task silently letting speculative <link> tags through.
+function extractFunctionSource(script: string, name: string): string {
+  const marker = `function ${name}(`;
+  const start = script.indexOf(marker);
+  if (start === -1) throw new Error(`${name} not found in BROWSER_DRIVER_SCRIPT`);
+  const braceStart = script.indexOf("{", start);
+  let depth = 0;
+  let i = braceStart;
+  for (; i < script.length; i++) {
+    if (script[i] === "{") depth++;
+    else if (script[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        i += 1;
+        break;
+      }
+    }
+  }
+  return script.slice(start, i);
+}
+
+describe("BROWSER_DRIVER_SCRIPT addInitScript link guard, executed against the actual shipped text (THI-81)", () => {
+  function loadAddInitScriptLinkGuard() {
+    const hasBlockedLinkRelSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "hasBlockedLinkRel");
+    const stripSpeculativeLinkMarkupSrc = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "stripSpeculativeLinkMarkup");
+    // eslint-disable-next-line no-new-func -- deliberately executing the
+    // exact text that ships to the sandbox, not a hand-copied stand-in.
+    const factory = new Function(
+      `${hasBlockedLinkRelSrc}\n${stripSpeculativeLinkMarkupSrc}\nreturn { hasBlockedLinkRel, stripSpeculativeLinkMarkup };`,
+    );
+    return factory() as { hasBlockedLinkRel: (v: string) => boolean; stripSpeculativeLinkMarkup: (html: string) => string };
+  }
+
+  it("actually strips a straightforward preconnect link (would have caught the backslash-escaping bug that made this a silent no-op)", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    expect(stripSpeculativeLinkMarkup('<link rel="preconnect" href="http://169.254.169.254/">')).not.toContain(
+      "169.254.169.254",
+    );
+  });
+
+  it("strips a dns-prefetch link the same way, and leaves an unrelated link untouched", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    expect(stripSpeculativeLinkMarkup('<link rel="dns-prefetch" href="http://169.254.169.254/">')).not.toContain(
+      "169.254.169.254",
+    );
+    const benign = '<link rel="stylesheet" href="/app.css">';
+    expect(stripSpeculativeLinkMarkup(benign)).toBe(benign);
+  });
+
+  // THI-81 Finding 2 PoC, run against the addInitScript mirror specifically
+  // (the top-level allowRequest mirror has its own equivalent test below).
+  it("strips a link tag even when an earlier attribute value contains a literal '>' before rel=", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const html = '<link data-x="foo>bar" rel="preconnect" href="https://evil.example">';
+    expect(stripSpeculativeLinkMarkup(html)).not.toContain("evil.example");
+  });
+
+  // Guards against the decoy-attribute variant of the same bug: a value that
+  // merely *contains the text* "rel=" must not shadow the real rel
+  // attribute from a naive first-match search.
+  it("does not let a decoy attribute value containing the text 'rel=' hide the real rel attribute", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const html = '<link data-note="rel=bogus" rel="preconnect" href="https://evil.example">';
+    expect(stripSpeculativeLinkMarkup(html)).not.toContain("evil.example");
+  });
+
+  // THI-81 Finding 1 PoC: proves both the fix (join before sanitize) and the
+  // bug it replaces (sanitize each argument independently, then join).
+  it("document.write-style join-then-sanitize closes the split-tag bypass that sanitize-then-join misses", () => {
+    const { stripSpeculativeLinkMarkup } = loadAddInitScriptLinkGuard();
+    const args = ['<link rel="preconnect" href="http://169.254.169.254/"', ">"];
+    expect(stripSpeculativeLinkMarkup(args.map(String).join(""))).not.toContain("169.254.169.254");
+    expect(args.map(stripSpeculativeLinkMarkup).join("")).toContain("169.254.169.254");
+  });
+});
+
+describe("BROWSER_DRIVER_SCRIPT allowRequest body-rewrite mirror, executed against the actual shipped text (THI-81)", () => {
+  function loadBodyRewriteMirror() {
+    const src = extractFunctionSource(BROWSER_DRIVER_SCRIPT, "stripSpeculativeLinkTags");
+    // eslint-disable-next-line no-new-func -- see loadAddInitScriptLinkGuard above.
+    const factory = new Function(`${src}\nreturn stripSpeculativeLinkTags;`);
+    return factory() as (html: string) => string;
+  }
+
+  it("strips a link tag even when an earlier attribute value contains a literal '>' before rel=", () => {
+    const strip = loadBodyRewriteMirror();
+    const html = '<link data-x="foo>bar" rel="preconnect" href="https://evil.example">';
+    expect(strip(html)).not.toContain("evil.example");
+  });
+
+  it("leaves an unrelated link tag untouched", () => {
+    const strip = loadBodyRewriteMirror();
+    const benign = '<link rel="stylesheet" href="/app.css">';
+    expect(strip(benign)).toBe(benign);
   });
 });
 
@@ -431,5 +554,22 @@ describe("stripSpeculativeLinkTags (THI-75)", () => {
     const stripped = stripSpeculativeLinkTags(html);
     expect(stripped).toContain("<title>ok</title>");
     expect(stripped).toContain("<body>hi</body>");
+  });
+
+  // THI-81 Finding 2: the old `[^>]*` tag matcher didn't understand HTML
+  // attribute quoting, so a literal `>` inside a quoted attribute value
+  // (before rel=) ended the match early and the truncated tag never
+  // contained "rel=" - a silent no-op, not just an evadable check.
+  it("strips a link tag even when an earlier attribute value contains a literal '>' before rel=", () => {
+    const html = '<link data-x="foo>bar" rel="preconnect" href="https://evil.example">';
+    expect(stripSpeculativeLinkTags(html)).not.toContain("evil.example");
+  });
+
+  // Decoy-attribute variant of the same class of bug: a value that merely
+  // *contains the text* "rel=" must not shadow the real rel attribute from a
+  // naive first-match-anywhere-in-the-tag search.
+  it("does not let a decoy attribute value containing the text 'rel=' hide the real rel attribute", () => {
+    const html = '<link data-note="rel=bogus" rel="preconnect" href="https://evil.example">';
+    expect(stripSpeculativeLinkTags(html)).not.toContain("evil.example");
   });
 });
