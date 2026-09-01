@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect } from "react";
+
 import { X } from "lucide-react";
 import { Dialog } from "radix-ui";
 
@@ -12,6 +14,20 @@ interface MobileNavDrawerProps {
 
 /** Off-canvas nav for below `md` (THI-93) — the desktop `NavRail` stays a static column at `md`+. */
 export function MobileNavDrawer({ open, onOpenChange }: MobileNavDrawerProps) {
+  // `md:hidden` only visually hides Overlay/Content past Tailwind's `md` breakpoint
+  // (768px, unmodified in tailwind.config.ts) — Dialog.Root itself stays logically
+  // open across a resize (e.g. tablet rotation), which would otherwise leave body
+  // scroll locked and the focus trap wired to now-invisible content.
+  useEffect(() => {
+    if (!open) return;
+    const query = window.matchMedia("(min-width: 768px)");
+    const handleChange = (event: MediaQueryListEvent) => {
+      if (event.matches) onOpenChange(false);
+    };
+    query.addEventListener("change", handleChange);
+    return () => query.removeEventListener("change", handleChange);
+  }, [open, onOpenChange]);
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
