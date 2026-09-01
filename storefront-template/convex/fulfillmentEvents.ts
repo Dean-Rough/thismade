@@ -7,6 +7,18 @@ export const record = mutation({
     payload: v.string(),
   },
   handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("fulfillmentEvents")
+      .withIndex("by_external_order_id", (q) =>
+        q.eq("externalOrderId", args.externalOrderId),
+      )
+      .first();
+    if (existing) {
+      // Replay within the HMAC signature's tolerance window: no-op instead
+      // of inserting a duplicate row for the same externalOrderId.
+      return existing._id;
+    }
+
     return ctx.db.insert("fulfillmentEvents", {
       externalOrderId: args.externalOrderId,
       payload: args.payload,
