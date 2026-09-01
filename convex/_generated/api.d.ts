@@ -10,6 +10,7 @@
 
 import type * as agentContextFiles from "../agentContextFiles.js";
 import type * as agentEvents from "../agentEvents.js";
+import type * as agentSkills from "../agentSkills.js";
 import type * as agentTasks from "../agentTasks.js";
 import type * as apiKeys from "../apiKeys.js";
 import type * as businesses from "../businesses.js";
@@ -33,6 +34,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   agentContextFiles: typeof agentContextFiles;
   agentEvents: typeof agentEvents;
+  agentSkills: typeof agentSkills;
   agentTasks: typeof agentTasks;
   apiKeys: typeof apiKeys;
   businesses: typeof businesses;

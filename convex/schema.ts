@@ -215,4 +215,21 @@ export default defineSchema({
   })
     .index("by_business", ["businessId"])
     .index("by_business_file_key", ["businessId", "fileKey"]),
+
+  // Phase 3: skills-as-files — reusable capabilities as versioned prompt
+  // files attached to a business (e.g. a "brandkit" image-gen skill), same
+  // storage-only/no-template-content split as agentContextFiles above and
+  // for the same reason (Security & Compliance Reviewer-gated IP boundary).
+  // skillKey is a free string, not a closed literal union like fileKey —
+  // the whole point of "skills-as-files" is that new skills attach without
+  // a schema change.
+  agentSkills: defineTable({
+    businessId: v.id("businesses"),
+    skillKey: v.string(),
+    version: v.number(),
+    content: v.string(),
+    updatedAt: v.number(),
+  })
+    .index("by_business", ["businessId"])
+    .index("by_business_skill_key", ["businessId", "skillKey"]),
 });
