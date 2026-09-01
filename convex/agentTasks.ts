@@ -361,6 +361,11 @@ export const requestToolApproval = internalMutation({
     taskId: v.id("agentTasks"),
     toolName: v.string(),
     argsSummary: v.string(),
+    // THI-74 Finding 3: the full-fidelity binding — see
+    // convex/lib/workerLoop.ts's hashToolArgs. argsSummary stays for what an
+    // owner/CEO actually reads when deciding; argsHash is what the gate
+    // compares against on resume.
+    argsHash: v.string(),
   },
   handler: async (ctx, args) => {
     const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
@@ -375,7 +380,12 @@ export const requestToolApproval = internalMutation({
     }
     const now = Date.now();
     await ctx.db.patch(args.taskId, {
-      pendingApproval: { toolName: args.toolName, argsSummary: args.argsSummary, requestedAt: now },
+      pendingApproval: {
+        toolName: args.toolName,
+        argsSummary: args.argsSummary,
+        argsHash: args.argsHash,
+        requestedAt: now,
+      },
       // THI-73 Finding 2: a resumed run that hits a second destructive call
       // pauses here too (status stays "in_progress" the whole time), so the
       // prior resume's claim must be released now — otherwise a later
@@ -420,7 +430,7 @@ export const resolveToolApproval = internalMutation({
     if (!task.pendingApproval) {
       throw new Error("no_pending_approval");
     }
-    const { toolName, argsSummary } = task.pendingApproval;
+    const { toolName, argsHash } = task.pendingApproval;
     const now = Date.now();
     await ctx.db.patch(args.taskId, { pendingApproval: undefined, updatedAt: now });
     await logEvent(ctx, {
@@ -449,14 +459,15 @@ export const resolveToolApproval = internalMutation({
     // resumeWorkerTask). No conversation or sandbox state survives the
     // pause — see that function's own comment for why a resumed run
     // replays `instructions` from scratch with a single-use grant rather
-    // than continuing mid-conversation. THI-73 Finding 1: the grant carries
-    // the approved argsSummary alongside toolName, not just the name — see
-    // workerLoop.ts's approvedCall for why a name-only grant isn't enough.
+    // than continuing mid-conversation. THI-73 Finding 1 / THI-74 Finding 3:
+    // the grant carries the approved argsHash alongside toolName, not just
+    // the name (Finding 1) and not the truncated argsSummary (Finding 3) —
+    // see workerLoop.ts's approvedCall/hashToolArgs for why.
     await ctx.scheduler.runAfter(0, internal.workerRunner.resumeWorkerTask, {
       businessId: args.businessId,
       taskId: args.taskId,
       approvedToolName: toolName,
-      approvedArgsSummary: argsSummary,
+      approvedArgsHash: argsHash,
     });
     return ctx.db.get(args.taskId);
   },

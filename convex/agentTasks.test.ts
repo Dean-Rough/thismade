@@ -850,11 +850,13 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
       taskId,
       toolName: "run_shell",
       argsSummary: '{"command":"rm -rf /tmp/x"}',
+      argsHash: "hash-rm-rf",
     });
 
     expect(result?.status).toBe("in_progress");
     expect(result?.pendingApproval?.toolName).toBe("run_shell");
     expect(result?.pendingApproval?.argsSummary).toBe('{"command":"rm -rf /tmp/x"}');
+    expect(result?.pendingApproval?.argsHash).toBe("hash-rm-rf");
   });
 
   it("requestToolApproval rejects a task that is not in_progress", async () => {
@@ -877,6 +879,7 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
         taskId: task!._id,
         toolName: "run_shell",
         argsSummary: "{}",
+        argsHash: "hash-empty",
       }),
     ).rejects.toThrow("invalid_pending_approval_status:todo");
   });
@@ -903,6 +906,7 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
       taskId,
       toolName: "run_shell",
       argsSummary: '{"command":"npm publish"}',
+      argsHash: "hash-npm-publish",
     });
 
     const result = await t.mutation(internal.agentTasks.resolveToolApproval, {
@@ -934,6 +938,7 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
       taskId,
       toolName: "run_shell",
       argsSummary: '{"command":"npm publish"}',
+      argsHash: "hash-npm-publish",
     });
 
     const result = await t.mutation(internal.agentTasks.resolveToolApproval, {
@@ -965,6 +970,7 @@ describe("agentTasks: destructive tool call approval gate (THI-66)", () => {
       taskId,
       toolName: "run_shell",
       argsSummary: "{}",
+      argsHash: "hash-empty",
     });
     await t.mutation(internal.agentTasks.resolveToolApproval, {
       businessId,
@@ -1061,6 +1067,7 @@ describe("agentTasks: resumed-run atomic claim (THI-73 Finding 2)", () => {
       taskId,
       toolName: "run_shell",
       argsSummary: "{}",
+      argsHash: "hash-empty",
     });
 
     await expect(
@@ -1107,6 +1114,7 @@ describe("agentTasks: resumed-run atomic claim (THI-73 Finding 2)", () => {
       taskId,
       toolName: "run_shell",
       argsSummary: '{"command":"npm publish"}',
+      argsHash: "hash-npm-publish",
     });
     await t.mutation(internal.agentTasks.resolveToolApproval, {
       businessId,

@@ -162,6 +162,12 @@ export default defineSchema({
       v.object({
         toolName: v.string(),
         argsSummary: v.string(),
+        // THI-74 Finding 3: hash of the full, untruncated args — see
+        // convex/lib/workerLoop.ts's hashToolArgs. argsSummary alone
+        // (truncated at 500 chars) let a resumed call diverge past that
+        // boundary and still match; this is what the gate actually
+        // compares on resume.
+        argsHash: v.string(),
         requestedAt: v.number(),
       }),
     ),

@@ -48,7 +48,7 @@ function toRichContentEvent(taskId: Id<"agentTasks">, event: WorkerLoopEvent) {
 async function performWorkerRun(
   ctx: ActionCtx,
   args: { businessId: Id<"businesses">; taskId: Id<"agentTasks"> },
-  opts: { approvedToolName?: string; approvedArgsSummary?: string },
+  opts: { approvedToolName?: string; approvedArgsHash?: string },
 ): Promise<void> {
   const task = await ctx.runQuery(internal.agentTasks.getScopedById, args);
   if (!task) {
@@ -102,14 +102,15 @@ async function performWorkerRun(
           return file ? file.content : null;
         },
       },
-      // THI-73 Finding 1: only forms a grant when both toolName and
-      // argsSummary are present — a name with no matching approved args
-      // (shouldn't happen given how resolveToolApproval schedules this, but
-      // fail closed rather than assume) yields no grant at all, so the gate
-      // pauses again instead of treating a partial value as a free pass.
+      // THI-73 Finding 1 / THI-74 Finding 3: only forms a grant when both
+      // toolName and argsHash are present — a name with no matching
+      // approved args (shouldn't happen given how resolveToolApproval
+      // schedules this, but fail closed rather than assume) yields no grant
+      // at all, so the gate pauses again instead of treating a partial
+      // value as a free pass.
       approvedCall:
-        opts.approvedToolName !== undefined && opts.approvedArgsSummary !== undefined
-          ? { toolName: opts.approvedToolName, argsSummary: opts.approvedArgsSummary }
+        opts.approvedToolName !== undefined && opts.approvedArgsHash !== undefined
+          ? { toolName: opts.approvedToolName, argsHash: opts.approvedArgsHash }
           : undefined,
       onEvent,
     });
@@ -127,6 +128,7 @@ async function performWorkerRun(
         taskId: args.taskId,
         toolName: outcome.pendingApproval!.toolName,
         argsSummary: outcome.pendingApproval!.argsSummary,
+        argsHash: outcome.pendingApproval!.argsHash,
       });
     } else {
       await ctx.runMutation(internal.agentTasks.recordAttemptFailure, {
@@ -198,9 +200,9 @@ export const resumeWorkerTask = internalAction({
     businessId: v.id("businesses"),
     taskId: v.id("agentTasks"),
     approvedToolName: v.string(),
-    approvedArgsSummary: v.string(),
+    approvedArgsHash: v.string(),
   },
-  handler: async (ctx, { approvedToolName, approvedArgsSummary, ...args }) => {
+  handler: async (ctx, { approvedToolName, approvedArgsHash, ...args }) => {
     // Idempotent-dispatch guard, mirroring runWorkerTask's beginWorkerRun
     // check: beginResumedWorkerRun (THI-73 Finding 2) atomically claims this
     // resume via resumeClaimedAt, the same throw-on-second-caller pattern
@@ -213,6 +215,6 @@ export const resumeWorkerTask = internalAction({
     } catch {
       return;
     }
-    await performWorkerRun(ctx, args, { approvedToolName, approvedArgsSummary });
+    await performWorkerRun(ctx, args, { approvedToolName, approvedArgsHash });
   },
 });

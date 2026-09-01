@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { LlmClient, LlmMessage } from "./llmClient";
 import {
   assertToolAllowed,
@@ -26,6 +27,10 @@ export type WorkerLoopEvent =
 export interface PendingToolApproval {
   toolName: string;
   argsSummary: string;
+  // THI-74 Finding 3: full-fidelity binding for the approval grant — see
+  // hashToolArgs below for why argsSummary alone (truncated at
+  // ARGS_SUMMARY_MAX_LENGTH) isn't enough to gate on.
+  argsHash: string;
 }
 
 export interface WorkerLoopOutcome {
@@ -58,16 +63,22 @@ export interface WorkerLoopOptions {
   // `instructions` from scratch, so this grant is what lets the model's
   // retraced destructive call actually execute instead of pausing again.
   //
-  // THI-73 Finding 1: bound to the exact argsSummary the human reviewed, not
-  // just the tool name. A resumed run is a fresh LLM conversation — nothing
-  // guarantees its first destructive call reproduces the same arguments the
-  // owner/CEO actually approved (prompt injection in `instructions`, or
-  // ordinary sampling variance, could steer it to something else with the
-  // same tool name). Matching on name alone would let that call execute
-  // unreviewed; comparing argsSummary too closes that gap. Consumed on first
-  // match; a second destructive call later in the same resumed run — even a
-  // matching one — still gates normally.
-  approvedCall?: { toolName: string; argsSummary: string };
+  // THI-73 Finding 1 / THI-74 Finding 3: bound to a hash of the exact full
+  // arguments the human reviewed, not just the tool name and not just the
+  // truncated display summary. A resumed run is a fresh LLM conversation —
+  // nothing guarantees its first destructive call reproduces the same
+  // arguments the owner/CEO actually approved (prompt injection in
+  // `instructions`, or ordinary sampling variance, could steer it to
+  // something else with the same tool name). Matching on name alone would
+  // let that call execute unreviewed (Finding 1); matching on the
+  // ARGS_SUMMARY_MAX_LENGTH-truncated argsSummary instead of the full
+  // arguments still lets a resumed call diverge past the truncation
+  // boundary and execute unreviewed (Finding 3, confirmed with a live PoC
+  // against a >500-char run_shell command sharing only its prefix with what
+  // was approved). Comparing a hash of the full, untruncated args closes
+  // both gaps. Consumed on first match; a second destructive call later in
+  // the same resumed run — even a matching one — still gates normally.
+  approvedCall?: { toolName: string; argsHash: string };
 }
 
 const DEFAULT_MAX_TURNS = 20;
@@ -84,6 +95,40 @@ function summarizeArgs(args: Record<string, unknown>): string {
   return json.length > ARGS_SUMMARY_MAX_LENGTH
     ? `${json.slice(0, ARGS_SUMMARY_MAX_LENGTH)}…`
     : json;
+}
+
+// Deterministic regardless of the source object's own key insertion order —
+// two calls with the same logical args must hash the same even if the LLM
+// client (or a JSON round-trip) produced their keys in a different order,
+// otherwise a legitimate resumed call could fail-closed-pause for the wrong
+// reason (a UX bug, not a security one, but worth avoiding).
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  const entries = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`);
+  return `{${entries.join(",")}}`;
+}
+
+// THI-74 Finding 3: the full-fidelity binding for the destructive-call
+// approval grant. Unlike summarizeArgs (truncated at ARGS_SUMMARY_MAX_LENGTH
+// for human display), this hashes the complete, untruncated arguments, so
+// two calls that only agree on their first ARGS_SUMMARY_MAX_LENGTH
+// characters still hash differently and the approval gate below correctly
+// treats them as a mismatch instead of a match.
+export function hashToolArgs(args: Record<string, unknown>): string {
+  let json: string;
+  try {
+    json = stableStringify(args);
+  } catch {
+    json = String(args);
+  }
+  return createHash("sha256").update(json).digest("hex");
 }
 
 export async function runWorkerLoop(opts: WorkerLoopOptions): Promise<WorkerLoopOutcome> {
@@ -133,18 +178,21 @@ export async function runWorkerLoop(opts: WorkerLoopOptions): Promise<WorkerLoop
       // tool_result is logged for a call that never ran, and the loop ends
       // here rather than continuing to whatever the model proposes next.
       //
-      // THI-73 Finding 1: the match is on toolName AND argsSummary, not
-      // toolName alone — see WorkerLoopOptions.approvedCall for why a
-      // name-only match would let an unreviewed call through. A grant whose
-      // args don't match what's about to execute is treated as no grant at
-      // all: fail closed into a fresh pending-approval pause rather than
+      // THI-73 Finding 1 / THI-74 Finding 3: the match is on toolName AND a
+      // hash of the full args, not toolName alone (Finding 1) and not the
+      // ARGS_SUMMARY_MAX_LENGTH-truncated argsSummary (Finding 3 — two
+      // distinct commands that only share their first 500 chars produce the
+      // same argsSummary but a different argsHash). A grant whose args
+      // don't match what's about to execute is treated as no grant at all:
+      // fail closed into a fresh pending-approval pause rather than
       // silently running.
       const isRegistered = tools.some((tool) => tool.name === call.toolName);
       if (isRegistered && isDestructiveToolCall(opts.workerType, call.toolName)) {
+        const argsHash = hashToolArgs(call.input);
         if (
           approvedCall &&
           call.toolName === approvedCall.toolName &&
-          argsSummary === approvedCall.argsSummary
+          argsHash === approvedCall.argsHash
         ) {
           approvedCall = undefined;
         } else {
@@ -152,7 +200,7 @@ export async function runWorkerLoop(opts: WorkerLoopOptions): Promise<WorkerLoop
           return {
             status: "awaiting_approval",
             turns: turn,
-            pendingApproval: { toolName: call.toolName, argsSummary },
+            pendingApproval: { toolName: call.toolName, argsSummary, argsHash },
           };
         }
       }

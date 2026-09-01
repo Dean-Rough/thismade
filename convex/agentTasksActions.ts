@@ -137,6 +137,7 @@ export const requestToolApproval = action({
     taskId: v.id("agentTasks"),
     toolName: v.string(),
     argsSummary: v.string(),
+    argsHash: v.string(),
     secret: v.string(),
   },
   handler: async (ctx, { secret, ...args }): Promise<Doc<"agentTasks"> | null> => {
