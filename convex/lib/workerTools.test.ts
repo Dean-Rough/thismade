@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executeTool, planNavigationHop, BROWSER_DRIVER_SCRIPT } from "./workerTools";
+import { executeTool, planNavigationHop, stripSpeculativeLinkTags, BROWSER_DRIVER_SCRIPT } from "./workerTools";
 import type { ToolExecutionContext } from "./workerTools";
 import type { SandboxCommandResult, SandboxHandle } from "./sandboxProvider";
 
@@ -203,5 +203,75 @@ describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
     expect(BROWSER_DRIVER_SCRIPT).toContain("context.on(\"page\"");
     expect(BROWSER_DRIVER_SCRIPT).toContain("routeWebSocket(");
     expect(BROWSER_DRIVER_SCRIPT).toContain("serviceWorkers: \"block\"");
+  });
+
+  // THI-75: WebRTC ICE gathering and dns-prefetch/preconnect sit outside the
+  // request-interception model entirely (no HTTP request for context.route()
+  // to ever see), so unlike the checks above these can't be proven by
+  // exercising request handling - the same "assert the shipped text wires up
+  // the guard" pattern is the best available check without a live sandbox.
+  it("disables WebRTC via an init script and a Chromium launch flag", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain("addInitScript(");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("RTCPeerConnection");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+  });
+
+  it("disables dns-prefetch via a Chromium launch flag and strips speculative <link> tags from every document response", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain("--dns-prefetch-disable");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("stripSpeculativeLinkTags");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("resourceType() === \"document\"");
+  });
+
+  // The route.fetch()-based rewrite must never let a redirect response
+  // bypass the per-hop DNS-pinning loop above by following it internally -
+  // this pins down that the driver text actually guards for that (see
+  // allowRequest's maxRedirects: 0 comment), not just that a rewrite exists.
+  it("does not let the document-rewrite path swallow a redirect response", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain("maxRedirects: 0");
+    expect(BROWSER_DRIVER_SCRIPT).toContain("status >= 300 && status < 400");
+  });
+});
+
+// THI-75: stripSpeculativeLinkTags is the tested source of truth the driver
+// script's hand-written mirror (same function, inlined as JS text inside
+// BROWSER_DRIVER_SCRIPT) has to reproduce - same "test the TS copy directly"
+// pattern as planNavigationHop/pinHostname above.
+describe("stripSpeculativeLinkTags (THI-75)", () => {
+  it("strips a preconnect link tag", () => {
+    const html = '<head><link rel="preconnect" href="https://evil.example"></head>';
+    expect(stripSpeculativeLinkTags(html)).not.toContain("evil.example");
+    expect(stripSpeculativeLinkTags(html)).not.toContain("<link");
+  });
+
+  it("strips a dns-prefetch link tag", () => {
+    const html = '<link rel="dns-prefetch" href="//evil.example">';
+    expect(stripSpeculativeLinkTags(html)).not.toContain("evil.example");
+  });
+
+  it("strips a preconnect link tag with single-quoted attributes", () => {
+    const html = "<link rel='preconnect' href='https://evil.example'>";
+    expect(stripSpeculativeLinkTags(html)).not.toContain("evil.example");
+  });
+
+  it("strips a link tag whose rel contains preconnect alongside other tokens", () => {
+    const html = '<link rel="noopener preconnect" href="https://evil.example">';
+    expect(stripSpeculativeLinkTags(html)).not.toContain("evil.example");
+  });
+
+  it("leaves an unrelated link tag (e.g. stylesheet) untouched", () => {
+    const html = '<link rel="stylesheet" href="/app.css">';
+    expect(stripSpeculativeLinkTags(html)).toBe(html);
+  });
+
+  it("leaves a plain prefetch link (not dns-prefetch) untouched", () => {
+    const html = '<link rel="prefetch" href="/next-page.html">';
+    expect(stripSpeculativeLinkTags(html)).toBe(html);
+  });
+
+  it("leaves the rest of the document intact", () => {
+    const html = '<html><head><link rel="preconnect" href="https://evil.example"><title>ok</title></head><body>hi</body></html>';
+    const stripped = stripSpeculativeLinkTags(html);
+    expect(stripped).toContain("<title>ok</title>");
+    expect(stripped).toContain("<body>hi</body>");
   });
 });
