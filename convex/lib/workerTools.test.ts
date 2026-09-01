@@ -314,9 +314,18 @@ describe("BROWSER_DRIVER_SCRIPT (THI-72)", () => {
   // call boundary so no single argument ever contained a complete tag.
   // Assert the shipped text joins arguments before sanitizing once, and no
   // longer contains the old per-argument-map pattern.
-  it("joins document.write/writeln arguments before sanitizing, instead of sanitizing each argument independently", () => {
-    expect(BROWSER_DRIVER_SCRIPT).toContain('stripSpeculativeLinkMarkup(methodArgs.map(String).join(""))');
+  // THI-87: also assert the join goes through
+  // stripSpeculativeLinkMarkupFromWriteStream (the cross-call-buffered
+  // variant), not the plain stripSpeculativeLinkMarkup used by the
+  // one-shot innerHTML/outerHTML/insertAdjacentHTML callers - joining
+  // within a call closes the within-call split (THI-81) but not the
+  // cross-call split (THI-87), which needs the buffered variant.
+  it("joins document.write/writeln arguments before sanitizing through the cross-call-buffered variant, instead of sanitizing each argument independently or per-call only", () => {
+    expect(BROWSER_DRIVER_SCRIPT).toContain(
+      'stripSpeculativeLinkMarkupFromWriteStream(methodArgs.map(String).join(""))',
+    );
     expect(BROWSER_DRIVER_SCRIPT).not.toContain("methodArgs.map(stripSpeculativeLinkMarkup)");
+    expect(BROWSER_DRIVER_SCRIPT).not.toContain('stripSpeculativeLinkMarkup(methodArgs.map(String).join(""))');
   });
 
   // THI-80 Finding 2: the page-console diagnostic relay used to match on the
@@ -372,6 +381,20 @@ function extractFunctionSource(script: string, name: string, fromIndex = 0): str
   return script.slice(start, i);
 }
 
+// THI-87: stripSpeculativeLinkMarkupFromWriteStream's cross-call buffering
+// depends on two closure-scoped declarations (pendingWriteTail,
+// MAX_PENDING_WRITE_TAIL_LENGTH) that aren't function declarations, so
+// extractFunctionSource can't pull them out. Same "run the actual shipped
+// text" rationale as extractFunctionSource above - grab the exact statement
+// instead of hand-copying a stand-in that could silently drift from it.
+function extractStatement(script: string, prefix: string, fromIndex = 0): string {
+  const start = script.indexOf(prefix, fromIndex);
+  if (start === -1) throw new Error(`"${prefix}" not found in BROWSER_DRIVER_SCRIPT`);
+  const end = script.indexOf(";", start);
+  if (end === -1) throw new Error(`no terminating ";" found for "${prefix}" in BROWSER_DRIVER_SCRIPT`);
+  return script.slice(start, end + 1);
+}
+
 describe("BROWSER_DRIVER_SCRIPT addInitScript link guard, executed against the actual shipped text (THI-81)", () => {
   function loadAddInitScriptLinkGuard() {
     // THI-86: BROWSER_DRIVER_SCRIPT now has two distinct scanLinkTag
@@ -393,12 +416,32 @@ describe("BROWSER_DRIVER_SCRIPT addInitScript link guard, executed against the a
       "stripSpeculativeLinkMarkup",
       closureStart,
     );
+    // THI-87: pendingWriteTail/MAX_PENDING_WRITE_TAIL_LENGTH are the
+    // cross-call buffer state stripSpeculativeLinkMarkupFromWriteStream
+    // closes over - must be declared once per factory() call (i.e. once per
+    // simulated document, matching the real addInitScript closure's
+    // per-navigation lifetime) so each test starts from a fresh buffer.
+    const pendingWriteTailDeclSrc = extractStatement(BROWSER_DRIVER_SCRIPT, "let pendingWriteTail", closureStart);
+    const maxPendingWriteTailLengthSrc = extractStatement(
+      BROWSER_DRIVER_SCRIPT,
+      "const MAX_PENDING_WRITE_TAIL_LENGTH",
+      closureStart,
+    );
+    const stripSpeculativeLinkMarkupFromWriteStreamSrc = extractFunctionSource(
+      BROWSER_DRIVER_SCRIPT,
+      "stripSpeculativeLinkMarkupFromWriteStream",
+      closureStart,
+    );
     // eslint-disable-next-line no-new-func -- deliberately executing the
     // exact text that ships to the sandbox, not a hand-copied stand-in.
     const factory = new Function(
-      `${hasBlockedLinkRelSrc}\n${scanLinkTagSrc}\n${decodeRelValueSrc}\n${stripSpeculativeLinkMarkupSrc}\nreturn { hasBlockedLinkRel, stripSpeculativeLinkMarkup };`,
+      `${hasBlockedLinkRelSrc}\n${scanLinkTagSrc}\n${decodeRelValueSrc}\n${stripSpeculativeLinkMarkupSrc}\n${pendingWriteTailDeclSrc}\n${maxPendingWriteTailLengthSrc}\n${stripSpeculativeLinkMarkupFromWriteStreamSrc}\nreturn { hasBlockedLinkRel, stripSpeculativeLinkMarkup, stripSpeculativeLinkMarkupFromWriteStream };`,
     );
-    return factory() as { hasBlockedLinkRel: (v: string) => boolean; stripSpeculativeLinkMarkup: (html: string) => string };
+    return factory() as {
+      hasBlockedLinkRel: (v: string) => boolean;
+      stripSpeculativeLinkMarkup: (html: string) => string;
+      stripSpeculativeLinkMarkupFromWriteStream: (chunk: string) => string;
+    };
   }
 
   it("actually strips a straightforward preconnect link (would have caught the backslash-escaping bug that made this a silent no-op)", () => {
@@ -544,6 +587,63 @@ describe("BROWSER_DRIVER_SCRIPT addInitScript link guard, executed against the a
     const result = stripSpeculativeLinkMarkup(html);
     expect(Date.now() - start).toBeLessThan(1000);
     expect(result).toBe(html);
+  });
+
+  // THI-87 PoC (quoted-href variant), run against the exact shipped
+  // stripSpeculativeLinkMarkupFromWriteStream/document.write patch pairing:
+  // document.write/writeln append to one persistent parser input stream
+  // across calls, so a <link> tag left unterminated by one call (which
+  // stripSpeculativeLinkMarkup alone correctly treats as "never reachable
+  // '>', pass through unstripped" - safe for one-shot innerHTML-style
+  // callers, not for a stream) can be completed by the very next call and
+  // become a live element if nothing carries the fragment forward.
+  // Confirmed live against real Chromium before this fix (see the issue).
+  it("closes the document.write cross-call split (quoted href) confirmed live against real Chromium (THI-87)", () => {
+    const { stripSpeculativeLinkMarkupFromWriteStream } = loadAddInitScriptLinkGuard();
+    const first = stripSpeculativeLinkMarkupFromWriteStream('<link rel=preconnect href="//169.254.169.254/');
+    const second = stripSpeculativeLinkMarkupFromWriteStream('">');
+    expect(first).not.toContain("169.254.169.254");
+    expect(second).not.toContain("169.254.169.254");
+  });
+
+  // THI-87 PoC (no-quote variant) from the same issue.
+  it("closes the document.write cross-call split (no quote) confirmed live against real Chromium (THI-87)", () => {
+    const { stripSpeculativeLinkMarkupFromWriteStream } = loadAddInitScriptLinkGuard();
+    const first = stripSpeculativeLinkMarkupFromWriteStream("<link rel=preconnect href=//169.254.169.254/");
+    const second = stripSpeculativeLinkMarkupFromWriteStream(">");
+    expect(first).not.toContain("169.254.169.254");
+    expect(second).not.toContain("169.254.169.254");
+  });
+
+  it("still strips a blocked link tag fully contained within a single document.write call", () => {
+    const { stripSpeculativeLinkMarkupFromWriteStream } = loadAddInitScriptLinkGuard();
+    const out = stripSpeculativeLinkMarkupFromWriteStream(
+      '<link rel="preconnect" href="http://169.254.169.254/">plain text after',
+    );
+    expect(out).not.toContain("169.254.169.254");
+    expect(out).toContain("plain text after");
+  });
+
+  it("reassembles a benign tag split across document.write calls unmodified", () => {
+    const { stripSpeculativeLinkMarkupFromWriteStream } = loadAddInitScriptLinkGuard();
+    const first = stripSpeculativeLinkMarkupFromWriteStream('<link rel="stylesheet" href="/app.c');
+    const second = stripSpeculativeLinkMarkupFromWriteStream('ss">');
+    expect(first + second).toBe('<link rel="stylesheet" href="/app.css">');
+  });
+
+  // THI-87's explicit requirement: bound how long a page can keep a
+  // fragment pending, so an endless stream of write() calls that never
+  // complete a tag can't grow the buffer without limit. Once the pending
+  // fragment exceeds MAX_PENDING_WRITE_TAIL_LENGTH, it must be treated as
+  // blocked (never emitted unstripped) and the buffer must reset rather
+  // than keep accumulating.
+  it("caps unbounded buffer growth for a tag that never completes, instead of buffering forever", () => {
+    const { stripSpeculativeLinkMarkupFromWriteStream } = loadAddInitScriptLinkGuard();
+    const first = stripSpeculativeLinkMarkupFromWriteStream("<link rel=preconnect href=" + "x".repeat(20_000));
+    expect(first).toContain("<!-- thismade: stripped speculative link -->");
+    expect(first.length).toBeLessThan(1_000);
+    const second = stripSpeculativeLinkMarkupFromWriteStream("plain text after the cap");
+    expect(second).toBe("plain text after the cap");
   });
 });
 

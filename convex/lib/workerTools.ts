@@ -1134,18 +1134,20 @@ async function navigateWithPinning(targetUrl, rules) {
       // realm on attacker-influenced innerHTML/document.write input, so
       // it's exposed to the same bypasses as the body-rewrite mirror above).
       //
-      // THI-86 follow-up (not fixed here, tracked separately): the same
-      // review found that document.write/writeln's persistent input stream
-      // breaks the "no reachable '>' means never a live element" reasoning
+      // THI-86 follow-up / THI-87: the same review found that
+      // document.write/writeln's persistent input stream breaks the "no
+      // reachable '>' means never a live element" reasoning
       // stripSpeculativeLinkMarkup's end===-1 branch relies on - a tag left
       // unterminated by one write() call can be completed by the next one
       // (confirmed live: document.write('<link rel=preconnect href="//x/');
       // followed by document.write('">') builds a real preconnect link,
       // the same cross-call class THI-81 Finding 1 closed for split
-      // arguments *within* one call, but not across calls). Flagged rather
-      // than fixed in this pass since closing it properly needs a
-      // persistent pending-tail buffer across write/writeln invocations,
-      // not just this tokenizer.
+      // arguments *within* one call, but not across calls). scanLinkTag and
+      // stripSpeculativeLinkMarkup below are unchanged and still only safe
+      // for callers that parse one finite fragment per call (innerHTML/
+      // outerHTML/insertAdjacentHTML) - document.write/writeln instead go
+      // through stripSpeculativeLinkMarkupFromWriteStream further below,
+      // which adds the persistent pending-tail buffer this needs.
       function scanLinkTag(html, start) {
         const n = html.length;
         const relValues = [];
@@ -1213,8 +1215,9 @@ async function navigateWithPinning(targetUrl, rules) {
           if (scan.end === -1) {
             // Safe for the innerHTML/outerHTML/insertAdjacentHTML callers
             // below (each parses one finite fragment per call). NOT safe to
-            // assume for document.write/writeln - see the THI-86 follow-up
-            // note above scanLinkTag.
+            // assume for document.write/writeln - see
+            // stripSpeculativeLinkMarkupFromWriteStream below, which those
+            // two use instead of this function for exactly that reason.
             result += str.slice(match.index);
             cursor = str.length;
             break;
@@ -1226,6 +1229,65 @@ async function navigateWithPinning(targetUrl, rules) {
           startPattern.lastIndex = scan.end;
         }
         result += str.slice(cursor);
+        return result;
+      }
+      // THI-87: document.write/writeln append to a single persistent HTML
+      // parser input stream across every call in the same script - there is
+      // no "EOF" between calls the way there is for one-shot
+      // innerHTML/outerHTML/insertAdjacentHTML fragments. That breaks
+      // stripSpeculativeLinkMarkup's end===-1 passthrough: a <link> tag left
+      // unterminated at the end of one write() call can be completed by the
+      // very next call and become a live element (confirmed live:
+      // document.write('<link rel=preconnect href="//x/') then
+      // document.write('">') builds a real preconnect link, even though each
+      // call in isolation is correctly sanitized - the bypass is the
+      // reassembly across calls, which stripSpeculativeLinkMarkup has no
+      // state to detect). pendingWriteTail carries any such unterminated
+      // fragment forward instead of ever handing it to the native method
+      // unsanitized: it's prepended to the next write()/writeln() call's
+      // joined arguments before scanning, so a tag split across any number
+      // of calls is only ever flushed once fully scanned (and stripped, if
+      // its rel is blocked). Closure-scoped rather than global/module-scope
+      // per the fix's own requirement - addInitScript reruns for every new
+      // document (navigation, popup, iframe), so this is already
+      // effectively per-document with no extra keying needed.
+      // MAX_PENDING_WRITE_TAIL_LENGTH is the circuit-break: without a bound,
+      // a page could call write() forever with a fragment that never
+      // completes and grow this buffer without limit. Past that length, stop
+      // waiting and treat the fragment as blocked (same placeholder comment
+      // as a real stripped tag) rather than ever emitting it unstripped.
+      let pendingWriteTail = "";
+      const MAX_PENDING_WRITE_TAIL_LENGTH = 8_192;
+      function stripSpeculativeLinkMarkupFromWriteStream(chunk) {
+        const str = pendingWriteTail + String(chunk == null ? "" : chunk);
+        const startPattern = /<link[\\s\\/>]/gi;
+        let result = "";
+        let cursor = 0;
+        let match;
+        let tail = "";
+        while ((match = startPattern.exec(str))) {
+          result += str.slice(cursor, match.index);
+          const scan = scanLinkTag(str, match.index);
+          if (scan.end === -1) {
+            tail = str.slice(match.index);
+            cursor = str.length;
+            break;
+          }
+          result += scan.relValues.some((v) => hasBlockedLinkRel(decodeRelValue(v)))
+            ? "<!-- thismade: stripped speculative link -->"
+            : str.slice(match.index, scan.end);
+          cursor = scan.end;
+          startPattern.lastIndex = scan.end;
+        }
+        if (tail) {
+          if (tail.length > MAX_PENDING_WRITE_TAIL_LENGTH) {
+            result += "<!-- thismade: stripped speculative link -->";
+            tail = "";
+          }
+        } else {
+          result += str.slice(cursor);
+        }
+        pendingWriteTail = tail;
         return result;
       }
       for (const prop of ["innerHTML", "outerHTML"]) {
@@ -1265,9 +1327,14 @@ async function navigateWithPinning(targetUrl, rules) {
           // ">")) so no single argument ever contained a complete tag for
           // the regex to match, then the native concatenation reassembled
           // the unstripped tag anyway. Joining first, matching the native
-          // concatenation step, then sanitizing once closes that.
+          // concatenation step, then sanitizing once closes that within a
+          // single call.
+          // THI-87: that's still not enough across calls - see
+          // stripSpeculativeLinkMarkupFromWriteStream above, which also
+          // carries an unterminated tag forward via pendingWriteTail so a
+          // split across write()/writeln() call boundaries is caught too.
           Document.prototype[method] = function (...methodArgs) {
-            return original.call(this, stripSpeculativeLinkMarkup(methodArgs.map(String).join("")));
+            return original.call(this, stripSpeculativeLinkMarkupFromWriteStream(methodArgs.map(String).join("")));
           };
         } catch (err) {
           console.error(diagToken + ": failed to patch Document.prototype." + method + ": " + (err && err.message ? err.message : String(err)));
