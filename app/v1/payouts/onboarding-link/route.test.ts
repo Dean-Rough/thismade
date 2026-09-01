@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashApiKey } from "@/convex/lib/apiKeyCrypto";
 
 process.env.NEXT_PUBLIC_CONVEX_URL = "https://fake.convex.cloud";
+process.env.CONVEX_SERVICE_SECRET = "test-secret";
 
 const ORIGINAL_STRIPE_KEY = process.env.STRIPE_SECRET_KEY;
 const ORIGINAL_APP_URL = process.env.NEXT_PUBLIC_APP_URL;
@@ -61,15 +62,15 @@ const backend = vi.hoisted(() => {
 
   async function dispatch(name: string, args: any): Promise<any> {
     switch (name) {
-      case "apiKeys:verifyByHash": {
+      case "apiKeysActions:verifyByHash": {
         for (const key of apiKeys.values()) {
           if (key.hashedKey === args.hashedKey && !key.revokedAt) return key;
         }
         return null;
       }
-      case "apiKeys:touchLastUsed":
+      case "apiKeysActions:touchLastUsed":
         return null;
-      case "payouts:getConnectStatus": {
+      case "payoutsActions:getConnectStatus": {
         const b = businesses.get(args.businessId);
         if (!b) return null;
         return {
@@ -79,8 +80,8 @@ const backend = vi.hoisted(() => {
           stripeConnectPayoutsEnabled: b.stripeConnectPayoutsEnabled ?? false,
         };
       }
-      case "payouts:setStripeConnectAccountId": {
-        bump("payouts:setStripeConnectAccountId");
+      case "payoutsActions:setStripeConnectAccountId": {
+        bump("payoutsActions:setStripeConnectAccountId");
         const b = businesses.get(args.businessId);
         if (!b) return null;
         if (!b.stripeConnectAccountId) {
@@ -88,7 +89,7 @@ const backend = vi.hoisted(() => {
         }
         return b;
       }
-      case "idempotencyKeys:beginOrReplay": {
+      case "idempotencyKeysActions:beginOrReplay": {
         const mapKey = `${args.businessId}|${args.route}|${args.key}`;
         for (const record of idempotency.values()) {
           if (record.mapKey === mapKey) {
@@ -105,7 +106,7 @@ const backend = vi.hoisted(() => {
         idempotency.set(id, { id, mapKey, requestHash: args.requestHash, status: "in_progress" });
         return { outcome: "began", id };
       }
-      case "idempotencyKeys:complete": {
+      case "idempotencyKeysActions:complete": {
         const record = idempotency.get(args.id);
         if (record) {
           record.status = "completed";
@@ -131,6 +132,9 @@ vi.mock("convex/browser", async () => {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
       async mutation(fnRef: unknown, args: unknown) {
+        return backend.dispatch(getFunctionName(fnRef as never), args);
+      }
+      async action(fnRef: unknown, args: unknown) {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
     },
@@ -245,7 +249,7 @@ describe("POST /v1/payouts/onboarding-link", () => {
       ([url]) => url === "https://api.stripe.com/v1/accounts",
     );
     expect(accountCreationCalls).toHaveLength(1);
-    expect(backend.mutationCallCounts.get("payouts:setStripeConnectAccountId")).toBe(1);
+    expect(backend.mutationCallCounts.get("payoutsActions:setStripeConnectAccountId")).toBe(1);
   });
 
   it("replays the cached response on a duplicate Idempotency-Key without calling Stripe again", async () => {

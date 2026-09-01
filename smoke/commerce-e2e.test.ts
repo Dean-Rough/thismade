@@ -44,6 +44,10 @@ function requireEnv(name: string): string {
 
 const CONVEX_URL = requireEnv("NEXT_PUBLIC_CONVEX_URL");
 const API_BASE = requireEnv("SMOKE_API_BASE_URL").replace(/\/$/, "");
+// THI-42: businesses/apiKeys.create are internalMutations now — this smoke
+// test seeds fixtures through the same secret-gated actions the app itself
+// would use for operator tooling, not through a public mutation.
+const CONVEX_SERVICE_SECRET = requireEnv("CONVEX_SERVICE_SECRET");
 const STRIPE_SECRET_KEY = requireEnv("STRIPE_SECRET_KEY");
 if (!STRIPE_SECRET_KEY.startsWith("sk_test_")) {
   // Mirrors the same guard every lib/stripe/*.ts file applies server-side —
@@ -183,40 +187,45 @@ beforeAll(async () => {
   convex = new ConvexHttpClient(CONVEX_URL);
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const businessAId = await convex.mutation(api.businesses.create, {
+  const businessAId = await convex.action(api.businessesActions.create, {
     name: "Smoke Test Co A",
     slug: `smoke-a-${runId}`,
     ownerUserId: "smoke-test-user-a",
+    secret: CONVEX_SERVICE_SECRET,
   });
-  const businessBId = await convex.mutation(api.businesses.create, {
+  const businessBId = await convex.action(api.businessesActions.create, {
     name: "Smoke Test Co B",
     slug: `smoke-b-${runId}`,
     ownerUserId: "smoke-test-user-b",
+    secret: CONVEX_SERVICE_SECRET,
   });
 
-  await convex.mutation(api.businesses.updateCheckoutReturnUrl, {
+  await convex.action(api.businessesActions.updateCheckoutReturnUrl, {
     businessId: businessAId,
     checkoutReturnUrl: API_BASE,
+    secret: CONVEX_SERVICE_SECRET,
   });
 
   rawKeyA = generateRawApiKey("test");
-  await convex.mutation(api.apiKeys.create, {
+  await convex.action(api.apiKeysActions.create, {
     businessId: businessAId,
     name: "Smoke Test Key A",
     prefix: visiblePrefix(rawKeyA),
     hashedKey: await hashApiKey(rawKeyA),
     scopes: ["read", "write", "money"],
     createdByUserId: "smoke-test-user-a",
+    secret: CONVEX_SERVICE_SECRET,
   });
 
   rawKeyB = generateRawApiKey("test");
-  await convex.mutation(api.apiKeys.create, {
+  await convex.action(api.apiKeysActions.create, {
     businessId: businessBId,
     name: "Smoke Test Key B",
     prefix: visiblePrefix(rawKeyB),
     hashedKey: await hashApiKey(rawKeyB),
     scopes: ["read", "write", "money"],
     createdByUserId: "smoke-test-user-b",
+    secret: CONVEX_SERVICE_SECRET,
   });
 });
 

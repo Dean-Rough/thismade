@@ -3,6 +3,7 @@ import { api } from "@/convex/_generated/api";
 import { authenticateRequest, requireScope } from "@/lib/api/auth";
 import { apiError, ok } from "@/lib/api/envelope";
 import { readIdempotencyKey, withIdempotency } from "@/lib/api/idempotency";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 
 const ROUTE = "POST /v1/files";
 
@@ -41,8 +42,9 @@ export async function POST(req: Request) {
     idempotency.key,
     rawBody,
     async () => {
-      const { fileId, uploadUrl } = await client.mutation(api.files.createPendingUpload, {
+      const { fileId, uploadUrl } = await client.action(api.filesActions.createPendingUpload, {
         businessId: auth.context.businessId,
+        secret: getConvexServiceSecret(),
       });
 
       return ok({ fileId, uploadUrl }, { status: 201 });

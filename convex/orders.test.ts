@@ -1,17 +1,17 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
 
 async function seedBusinessWithActiveProduct(t: ReturnType<typeof convexTest>, slug: string) {
-  const businessId = await t.mutation(api.businesses.create, {
+  const businessId = await t.mutation(internal.businesses.create, {
     name: `Business ${slug}`,
     slug,
     ownerUserId: `user_${slug}`,
   });
-  const product = await t.mutation(api.products.create, {
+  const product = await t.mutation(internal.products.create, {
     businessId,
     title: "Handmade Mug",
     description: "A mug.",
@@ -19,7 +19,7 @@ async function seedBusinessWithActiveProduct(t: ReturnType<typeof convexTest>, s
     currency: "usd",
   });
   if (!product) throw new Error("unreachable");
-  await t.mutation(api.products.update, {
+  await t.mutation(internal.products.update, {
     businessId,
     productId: product._id,
     status: "active",
@@ -34,7 +34,7 @@ describe("orders.createFromCheckoutSession", () => {
     const t = convexTest(schema, modules);
     const { businessId, productId } = await seedBusinessWithActiveProduct(t, "orders-a");
 
-    const order = await t.mutation(api.orders.createFromCheckoutSession, {
+    const order = await t.mutation(internal.orders.createFromCheckoutSession, {
       businessId,
       productId,
       customerEmail: "buyer@example.com",
@@ -65,10 +65,10 @@ describe("orders.createFromCheckoutSession", () => {
       stripeCheckoutSessionId: "cs_test_redelivered",
     };
 
-    const first = await t.mutation(api.orders.createFromCheckoutSession, args);
+    const first = await t.mutation(internal.orders.createFromCheckoutSession, args);
     // Simulates Stripe redelivering the exact same checkout.session.completed
     // event (retry after a timeout, or a manual resend from the dashboard).
-    const second = await t.mutation(api.orders.createFromCheckoutSession, args);
+    const second = await t.mutation(internal.orders.createFromCheckoutSession, args);
 
     expect(second?._id).toBe(first?._id);
 
@@ -86,7 +86,7 @@ describe("orders.createFromCheckoutSession", () => {
     const a = await seedBusinessWithActiveProduct(t, "orders-c-a");
     const b = await seedBusinessWithActiveProduct(t, "orders-c-b");
 
-    await t.mutation(api.orders.createFromCheckoutSession, {
+    await t.mutation(internal.orders.createFromCheckoutSession, {
       businessId: a.businessId,
       productId: a.productId,
       customerEmail: "a@example.com",
@@ -94,7 +94,7 @@ describe("orders.createFromCheckoutSession", () => {
       currency: "usd",
       stripeCheckoutSessionId: "cs_test_a",
     });
-    await t.mutation(api.orders.createFromCheckoutSession, {
+    await t.mutation(internal.orders.createFromCheckoutSession, {
       businessId: b.businessId,
       productId: b.productId,
       customerEmail: "b@example.com",
@@ -126,7 +126,7 @@ describe("orders: tenancy", () => {
     const a = await seedBusinessWithActiveProduct(t, "orders-tenancy-a");
     const b = await seedBusinessWithActiveProduct(t, "orders-tenancy-b");
 
-    const order = await t.mutation(api.orders.createFromCheckoutSession, {
+    const order = await t.mutation(internal.orders.createFromCheckoutSession, {
       businessId: a.businessId,
       productId: a.productId,
       customerEmail: "buyer@example.com",
@@ -136,7 +136,7 @@ describe("orders: tenancy", () => {
     });
     if (!order) throw new Error("unreachable");
 
-    const crossTenantFetch = await t.query(api.orders.getScopedById, {
+    const crossTenantFetch = await t.query(internal.orders.getScopedById, {
       orderId: order._id,
       businessId: b.businessId,
     });
@@ -148,7 +148,7 @@ describe("orders: tenancy", () => {
     const a = await seedBusinessWithActiveProduct(t, "orders-tenancy-c");
     const b = await seedBusinessWithActiveProduct(t, "orders-tenancy-d");
 
-    const order = await t.mutation(api.orders.createFromCheckoutSession, {
+    const order = await t.mutation(internal.orders.createFromCheckoutSession, {
       businessId: a.businessId,
       productId: a.productId,
       customerEmail: "buyer@example.com",
@@ -158,14 +158,14 @@ describe("orders: tenancy", () => {
     });
     if (!order) throw new Error("unreachable");
 
-    const crossTenantRefund = await t.mutation(api.orders.markRefunded, {
+    const crossTenantRefund = await t.mutation(internal.orders.markRefunded, {
       businessId: b.businessId,
       orderId: order._id,
       refundedAt: Date.now(),
     });
     expect(crossTenantRefund).toBeNull();
 
-    const stillA = await t.query(api.orders.getScopedById, {
+    const stillA = await t.query(internal.orders.getScopedById, {
       orderId: order._id,
       businessId: a.businessId,
     });
@@ -177,7 +177,7 @@ describe("orders: tenancy", () => {
     const a = await seedBusinessWithActiveProduct(t, "orders-tenancy-e");
     const b = await seedBusinessWithActiveProduct(t, "orders-tenancy-f");
 
-    const order = await t.mutation(api.orders.createFromCheckoutSession, {
+    const order = await t.mutation(internal.orders.createFromCheckoutSession, {
       businessId: a.businessId,
       productId: a.productId,
       customerEmail: "buyer@example.com",
@@ -187,7 +187,7 @@ describe("orders: tenancy", () => {
     });
     if (!order) throw new Error("unreachable");
 
-    const crossTenantShip = await t.mutation(api.orders.markShipped, {
+    const crossTenantShip = await t.mutation(internal.orders.markShipped, {
       businessId: b.businessId,
       orderId: order._id,
       shippedAt: Date.now(),
@@ -195,7 +195,7 @@ describe("orders: tenancy", () => {
     });
     expect(crossTenantShip).toBeNull();
 
-    const stillA = await t.query(api.orders.getScopedById, {
+    const stillA = await t.query(internal.orders.getScopedById, {
       orderId: order._id,
       businessId: a.businessId,
     });

@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import { getScoped } from "./lib/tenancy";
 import type { Doc, Id } from "./_generated/dataModel";
 
@@ -10,7 +10,12 @@ const SCOPE = v.union(
   v.literal("ads"),
 );
 
-export const create = mutation({
+// Internal-only (THI-42): verifyByHash/touchLastUsed are fronted by
+// apiKeysActions.ts for lib/api/auth.ts's use. `create` is fronted too, but
+// only for operator/test tooling (no key-issuance flow exists yet).
+// getScopedById/listByBusiness have no action wrapper — nothing calls them
+// yet.
+export const create = internalMutation({
   args: {
     businessId: v.id("businesses"),
     name: v.string(),
@@ -35,7 +40,7 @@ export const create = mutation({
 // The REST auth boundary: resolves a bearer token's hash to its business and
 // scopes. Deliberately does not take a businessId — the hash IS the tenant
 // lookup, so there is nothing here to scope-check against a caller-supplied id.
-export const verifyByHash = query({
+export const verifyByHash = internalQuery({
   args: { hashedKey: v.string() },
   handler: async (ctx, args) => {
     const key = await ctx.db
@@ -49,7 +54,7 @@ export const verifyByHash = query({
   },
 });
 
-export const touchLastUsed = mutation({
+export const touchLastUsed = internalMutation({
   args: { apiKeyId: v.id("apiKeys") },
   handler: async (ctx, args) => {
     await ctx.db.patch(args.apiKeyId, { lastUsedAt: Date.now() });
@@ -58,7 +63,7 @@ export const touchLastUsed = mutation({
 
 // Demonstrates the tenancy contract on a real Phase-1 table: fetching another
 // business's api key by id must behave exactly like it doesn't exist.
-export const getScopedById = query({
+export const getScopedById = internalQuery({
   args: {
     apiKeyId: v.id("apiKeys"),
     businessId: v.id("businesses"),
@@ -68,7 +73,7 @@ export const getScopedById = query({
   },
 });
 
-export const listByBusiness = query({
+export const listByBusiness = internalQuery({
   args: { businessId: v.id("businesses") },
   handler: async (ctx, args) => {
     return ctx.db

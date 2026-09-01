@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashApiKey } from "@/convex/lib/apiKeyCrypto";
 
 process.env.NEXT_PUBLIC_CONVEX_URL = "https://fake.convex.cloud";
+process.env.CONVEX_SERVICE_SECRET = "test-secret";
 
 const ORIGINAL_STRIPE_KEY = process.env.STRIPE_SECRET_KEY;
 
@@ -75,27 +76,27 @@ const backend = vi.hoisted(() => {
 
   async function dispatch(name: string, args: any): Promise<any> {
     switch (name) {
-      case "apiKeys:verifyByHash": {
+      case "apiKeysActions:verifyByHash": {
         for (const key of apiKeys.values()) {
           if (key.hashedKey === args.hashedKey && !key.revokedAt) return key;
         }
         return null;
       }
-      case "apiKeys:touchLastUsed":
+      case "apiKeysActions:touchLastUsed":
         return null;
-      case "orders:getScopedById": {
+      case "ordersActions:getScopedById": {
         const doc = orders.get(args.orderId);
         if (!doc || doc.businessId !== args.businessId) return null;
         return doc;
       }
-      case "orders:markRefunded": {
+      case "ordersActions:markRefunded": {
         const doc = orders.get(args.orderId);
         if (!doc || doc.businessId !== args.businessId) return null;
         doc.status = "refunded";
         doc.refundedAt = args.refundedAt;
         return doc;
       }
-      case "idempotencyKeys:beginOrReplay": {
+      case "idempotencyKeysActions:beginOrReplay": {
         const mapKey = `${args.businessId}|${args.route}|${args.key}`;
         for (const record of idempotency.values()) {
           if (record.mapKey === mapKey) {
@@ -112,7 +113,7 @@ const backend = vi.hoisted(() => {
         idempotency.set(id, { id, mapKey, requestHash: args.requestHash, status: "in_progress" });
         return { outcome: "began", id };
       }
-      case "idempotencyKeys:complete": {
+      case "idempotencyKeysActions:complete": {
         const record = idempotency.get(args.id);
         if (record) {
           record.status = "completed";
@@ -138,6 +139,9 @@ vi.mock("convex/browser", async () => {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
       async mutation(fnRef: unknown, args: unknown) {
+        return backend.dispatch(getFunctionName(fnRef as never), args);
+      }
+      async action(fnRef: unknown, args: unknown) {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
     },

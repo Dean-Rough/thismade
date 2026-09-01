@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 process.env.NEXT_PUBLIC_CONVEX_URL = "https://fake.convex.cloud";
+process.env.CONVEX_SERVICE_SECRET = "test-secret";
 
 const ORIGINAL_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const SECRET = "whsec_test_fake";
@@ -39,8 +40,11 @@ const backend = vi.hoisted(() => {
 
   async function dispatch(name: string, args: any): Promise<any> {
     switch (name) {
-      case "payouts:updateConnectStatusByStripeAccountId": {
-        mutationCalls.push(args);
+      case "payoutsActions:updateConnectStatusByStripeAccountId": {
+        const { secret, ...rest } = args;
+        if (secret !== "test-secret") throw new Error(`unexpected secret: ${secret}`);
+        mutationCalls.push(rest);
+        args = rest;
         for (const b of businesses.values()) {
           if (b.stripeConnectAccountId === args.stripeConnectAccountId) {
             b.stripeConnectDetailsSubmitted = args.detailsSubmitted;
@@ -51,7 +55,7 @@ const backend = vi.hoisted(() => {
         }
         return null;
       }
-      case "orders:createFromCheckoutSession": {
+      case "ordersActions:createFromCheckoutSession": {
         for (const order of orders.values()) {
           if (order.stripeCheckoutSessionId === args.stripeCheckoutSessionId) {
             return order;
@@ -90,6 +94,9 @@ vi.mock("convex/browser", async () => {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
       async mutation(fnRef: unknown, args: unknown) {
+        return backend.dispatch(getFunctionName(fnRef as never), args);
+      }
+      async action(fnRef: unknown, args: unknown) {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
     },

@@ -1,7 +1,11 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 
-export const getConnectStatus = query({
+// Internal-only (THI-42): every function here is fronted by the matching
+// action in payoutsActions.ts. setStripeConnectAccountId in particular was
+// the highest-severity finding — a public mutation that let anyone redirect
+// a business's Stripe Connect payout destination.
+export const getConnectStatus = internalQuery({
   args: { businessId: v.id("businesses") },
   handler: async (ctx, args) => {
     const business = await ctx.db.get(args.businessId);
@@ -21,7 +25,7 @@ export const getConnectStatus = query({
 // business already has an account id (e.g. a retried onboarding-link call),
 // the existing id wins — we never swap a business onto a different Connect
 // account out from under it.
-export const setStripeConnectAccountId = mutation({
+export const setStripeConnectAccountId = internalMutation({
   args: {
     businessId: v.id("businesses"),
     stripeConnectAccountId: v.string(),
@@ -46,7 +50,7 @@ export const setStripeConnectAccountId = mutation({
 // account id with no matching business (e.g. a stale or foreign event) is a
 // safe no-op, never an error — the webhook endpoint has no way to tell that
 // case apart from a delivery race, and both should just be ignored.
-export const updateConnectStatusByStripeAccountId = mutation({
+export const updateConnectStatusByStripeAccountId = internalMutation({
   args: {
     stripeConnectAccountId: v.string(),
     detailsSubmitted: v.boolean(),

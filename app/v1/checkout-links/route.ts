@@ -4,6 +4,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { authenticateRequest, requireScope } from "@/lib/api/auth";
 import { apiError, ok } from "@/lib/api/envelope";
 import { readIdempotencyKey, withIdempotency } from "@/lib/api/idempotency";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 import { createCheckoutSession } from "@/lib/stripe/checkout";
 
 const ROUTE = "POST /v1/checkout-links";
@@ -58,9 +59,10 @@ export async function POST(req: Request) {
       // app/v1/products/[id]/route.ts's fetchScopedProduct.
       let product;
       try {
-        product = await client.query(api.products.getScopedById, {
+        product = await client.action(api.productsActions.getScopedById, {
           productId: body.productId as Id<"products">,
           businessId: auth.context.businessId,
+          secret: getConvexServiceSecret(),
         });
       } catch {
         product = null;
@@ -81,8 +83,9 @@ export async function POST(req: Request) {
         return apiError("internal", "Product is active but missing a synced Stripe price.");
       }
 
-      const business = await client.query(api.businesses.getSelf, {
+      const business = await client.action(api.businessesActions.getSelf, {
         businessId: auth.context.businessId,
+        secret: getConvexServiceSecret(),
       });
       if (!business?.checkoutReturnUrl) {
         return apiError(

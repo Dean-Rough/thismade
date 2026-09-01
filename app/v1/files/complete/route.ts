@@ -3,6 +3,7 @@ import { api } from "@/convex/_generated/api";
 import { authenticateRequest, requireScope } from "@/lib/api/auth";
 import { apiError, ok } from "@/lib/api/envelope";
 import { readIdempotencyKey, withIdempotency } from "@/lib/api/idempotency";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 
 const ROUTE = "POST /v1/files/complete";
 
@@ -55,10 +56,11 @@ export async function POST(req: Request) {
 
       // A cross-tenant fileId (someone else's pending upload) must 404, never
       // 403 — enforced inside files.completeUpload via convex/lib/tenancy.ts.
-      const result = await client.mutation(api.files.completeUpload, {
+      const result = await client.action(api.filesActions.completeUpload, {
         businessId: auth.context.businessId,
         fileId: body.fileId as never,
         storageId: body.storageId as never,
+        secret: getConvexServiceSecret(),
       });
 
       if (!result) {

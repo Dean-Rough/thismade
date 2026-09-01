@@ -1,20 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { readIdempotencyKey, withIdempotency } from "./idempotency";
 
+process.env.CONVEX_SERVICE_SECRET = "test-secret";
+
 function requestWith(headers: Record<string, string>): Request {
   return new Request("https://example.com/v1/business", { headers });
 }
 
-// Minimal fake satisfying the two `client.mutation` calls withIdempotency
-// makes, in the fixed order it always makes them (beginOrReplay, then
-// complete) — no need for the full convex/browser mock other route tests
-// use, since withIdempotency never touches anything else on the client.
+// Minimal fake satisfying the two `client.action` calls withIdempotency
+// makes (idempotencyKeysActions.beginOrReplay/complete — THI-42 moved these
+// behind secret-gated actions), in the fixed order it always makes them —
+// no need for the full convex/browser mock other route tests use, since
+// withIdempotency never touches anything else on the client.
 function fakeConvexClient() {
   const calls: Array<{ step: "beginOrReplay" | "complete"; args: any }> = [];
   return {
     calls,
     client: {
-      mutation: async (_fnRef: any, args: any) => {
+      action: async (_fnRef: any, { secret, ...args }: any) => {
+        expect(secret).toBe("test-secret");
         if (calls.length === 0) {
           calls.push({ step: "beginOrReplay", args });
           return { outcome: "began" as const, id: "idem_1" };

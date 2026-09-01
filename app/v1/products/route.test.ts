@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hashApiKey } from "@/convex/lib/apiKeyCrypto";
 
 process.env.NEXT_PUBLIC_CONVEX_URL = "https://fake.convex.cloud";
+process.env.CONVEX_SERVICE_SECRET = "test-secret";
 
 // Fake Convex backend: mocks the wire boundary (`convex/browser`'s
 // ConvexHttpClient) rather than the route's own logic — same approach as
@@ -46,15 +47,15 @@ const backend = vi.hoisted(() => {
 
   async function dispatch(name: string, args: any): Promise<any> {
     switch (name) {
-      case "apiKeys:verifyByHash": {
+      case "apiKeysActions:verifyByHash": {
         for (const key of apiKeys.values()) {
           if (key.hashedKey === args.hashedKey && !key.revokedAt) return key;
         }
         return null;
       }
-      case "apiKeys:touchLastUsed":
+      case "apiKeysActions:touchLastUsed":
         return null;
-      case "products:create": {
+      case "productsActions:create": {
         const id = nextId("product");
         const doc = {
           _id: id,
@@ -69,10 +70,10 @@ const backend = vi.hoisted(() => {
         products.set(id, doc);
         return doc;
       }
-      case "products:listByBusiness": {
+      case "productsActions:listByBusiness": {
         return Array.from(products.values()).filter((p) => p.businessId === args.businessId);
       }
-      case "idempotencyKeys:beginOrReplay": {
+      case "idempotencyKeysActions:beginOrReplay": {
         const mapKey = `${args.businessId}|${args.route}|${args.key}`;
         for (const record of idempotency.values()) {
           if (record.mapKey === mapKey) {
@@ -89,7 +90,7 @@ const backend = vi.hoisted(() => {
         idempotency.set(id, { id, mapKey, requestHash: args.requestHash, status: "in_progress" });
         return { outcome: "began", id };
       }
-      case "idempotencyKeys:complete": {
+      case "idempotencyKeysActions:complete": {
         const record = idempotency.get(args.id);
         if (record) {
           record.status = "completed";
@@ -115,6 +116,9 @@ vi.mock("convex/browser", async () => {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
       async mutation(fnRef: unknown, args: unknown) {
+        return backend.dispatch(getFunctionName(fnRef as never), args);
+      }
+      async action(fnRef: unknown, args: unknown) {
         return backend.dispatch(getFunctionName(fnRef as never), args);
       }
     },
@@ -188,14 +192,14 @@ describe("GET /v1/products", () => {
 
   it("lists only the caller's own business's products in the envelope", async () => {
     const { businessAId, businessBId } = await seedBusinessWithKeys();
-    await backend.dispatch("products:create", {
+    await backend.dispatch("productsActions:create", {
       businessId: businessAId,
       title: "A's Mug",
       description: "",
       priceAmountCents: 1000,
       currency: "usd",
     });
-    await backend.dispatch("products:create", {
+    await backend.dispatch("productsActions:create", {
       businessId: businessBId,
       title: "B's Mug",
       description: "",

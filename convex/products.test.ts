@@ -1,17 +1,17 @@
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
-import { api } from "./_generated/api";
+import { internal } from "./_generated/api";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
 
 async function seedTwoBusinesses(t: ReturnType<typeof convexTest>) {
-  const businessAId = await t.mutation(api.businesses.create, {
+  const businessAId = await t.mutation(internal.businesses.create, {
     name: "Business A",
     slug: `products-a-${Math.random().toString(36).slice(2)}`,
     ownerUserId: "user_a",
   });
-  const businessBId = await t.mutation(api.businesses.create, {
+  const businessBId = await t.mutation(internal.businesses.create, {
     name: "Business B",
     slug: `products-b-${Math.random().toString(36).slice(2)}`,
     ownerUserId: "user_b",
@@ -24,7 +24,7 @@ describe("products.create", () => {
     const t = convexTest(schema, modules);
     const { businessAId } = await seedTwoBusinesses(t);
 
-    const product = await t.mutation(api.products.create, {
+    const product = await t.mutation(internal.products.create, {
       businessId: businessAId,
       title: "Handmade Mug",
       description: "A mug.",
@@ -44,7 +44,7 @@ describe("products.getScopedById: tenancy", () => {
     const t = convexTest(schema, modules);
     const { businessAId } = await seedTwoBusinesses(t);
 
-    const product = await t.mutation(api.products.create, {
+    const product = await t.mutation(internal.products.create, {
       businessId: businessAId,
       title: "Handmade Mug",
       description: "A mug.",
@@ -53,7 +53,7 @@ describe("products.getScopedById: tenancy", () => {
     });
     if (!product) throw new Error("unreachable");
 
-    const fetched = await t.query(api.products.getScopedById, {
+    const fetched = await t.query(internal.products.getScopedById, {
       productId: product._id,
       businessId: businessAId,
     });
@@ -64,7 +64,7 @@ describe("products.getScopedById: tenancy", () => {
     const t = convexTest(schema, modules);
     const { businessAId, businessBId } = await seedTwoBusinesses(t);
 
-    const product = await t.mutation(api.products.create, {
+    const product = await t.mutation(internal.products.create, {
       businessId: businessAId,
       title: "Handmade Mug",
       description: "A mug.",
@@ -73,7 +73,7 @@ describe("products.getScopedById: tenancy", () => {
     });
     if (!product) throw new Error("unreachable");
 
-    const crossTenantFetch = await t.query(api.products.getScopedById, {
+    const crossTenantFetch = await t.query(internal.products.getScopedById, {
       productId: product._id,
       businessId: businessBId,
     });
@@ -86,7 +86,7 @@ describe("products.update", () => {
     const t = convexTest(schema, modules);
     const { businessAId } = await seedTwoBusinesses(t);
 
-    const product = await t.mutation(api.products.create, {
+    const product = await t.mutation(internal.products.create, {
       businessId: businessAId,
       title: "Handmade Mug",
       description: "A mug.",
@@ -95,7 +95,7 @@ describe("products.update", () => {
     });
     if (!product) throw new Error("unreachable");
 
-    const updated = await t.mutation(api.products.update, {
+    const updated = await t.mutation(internal.products.update, {
       businessId: businessAId,
       productId: product._id,
       priceAmountCents: 2000,
@@ -110,7 +110,7 @@ describe("products.update", () => {
     const t = convexTest(schema, modules);
     const { businessAId } = await seedTwoBusinesses(t);
 
-    const product = await t.mutation(api.products.create, {
+    const product = await t.mutation(internal.products.create, {
       businessId: businessAId,
       title: "Handmade Mug",
       description: "A mug.",
@@ -119,7 +119,7 @@ describe("products.update", () => {
     });
     if (!product) throw new Error("unreachable");
 
-    const updated = await t.mutation(api.products.update, {
+    const updated = await t.mutation(internal.products.update, {
       businessId: businessAId,
       productId: product._id,
       status: "archived",
@@ -132,7 +132,7 @@ describe("products.update", () => {
     const t = convexTest(schema, modules);
     const { businessAId } = await seedTwoBusinesses(t);
 
-    const product = await t.mutation(api.products.create, {
+    const product = await t.mutation(internal.products.create, {
       businessId: businessAId,
       title: "Handmade Mug",
       description: "A mug.",
@@ -141,7 +141,7 @@ describe("products.update", () => {
     });
     if (!product) throw new Error("unreachable");
 
-    const updated = await t.mutation(api.products.update, {
+    const updated = await t.mutation(internal.products.update, {
       businessId: businessAId,
       productId: product._id,
       status: "active",
@@ -158,7 +158,7 @@ describe("products.update", () => {
     const t = convexTest(schema, modules);
     const { businessAId, businessBId } = await seedTwoBusinesses(t);
 
-    const product = await t.mutation(api.products.create, {
+    const product = await t.mutation(internal.products.create, {
       businessId: businessAId,
       title: "Handmade Mug",
       description: "A mug.",
@@ -167,7 +167,7 @@ describe("products.update", () => {
     });
     if (!product) throw new Error("unreachable");
 
-    const crossTenantUpdate = await t.mutation(api.products.update, {
+    const crossTenantUpdate = await t.mutation(internal.products.update, {
       businessId: businessBId,
       productId: product._id,
       title: "Hijacked",
@@ -175,7 +175,7 @@ describe("products.update", () => {
     expect(crossTenantUpdate).toBeNull();
 
     // The row itself must be untouched.
-    const stillA = await t.query(api.products.getScopedById, {
+    const stillA = await t.query(internal.products.getScopedById, {
       productId: product._id,
       businessId: businessAId,
     });
@@ -188,14 +188,14 @@ describe("products.listByBusiness", () => {
     const t = convexTest(schema, modules);
     const { businessAId, businessBId } = await seedTwoBusinesses(t);
 
-    await t.mutation(api.products.create, {
+    await t.mutation(internal.products.create, {
       businessId: businessAId,
       title: "A's Mug",
       description: "",
       priceAmountCents: 1000,
       currency: "usd",
     });
-    await t.mutation(api.products.create, {
+    await t.mutation(internal.products.create, {
       businessId: businessBId,
       title: "B's Mug",
       description: "",
@@ -203,7 +203,7 @@ describe("products.listByBusiness", () => {
       currency: "usd",
     });
 
-    const forA = await t.query(api.products.listByBusiness, { businessId: businessAId });
+    const forA = await t.query(internal.products.listByBusiness, { businessId: businessAId });
     expect(forA).toHaveLength(1);
     expect(forA[0]?.title).toBe("A's Mug");
   });
@@ -220,7 +220,7 @@ describe("products.deliverableFileUrl: file upload integration", () => {
     const t = convexTest(schema, modules);
     const { businessAId } = await seedTwoBusinesses(t);
 
-    const product = await t.mutation(api.products.create, {
+    const product = await t.mutation(internal.products.create, {
       businessId: businessAId,
       title: "Digital Pattern",
       description: "A PDF sewing pattern.",
@@ -229,7 +229,7 @@ describe("products.deliverableFileUrl: file upload integration", () => {
     });
     if (!product) throw new Error("unreachable");
 
-    const { fileId } = await t.mutation(api.files.createPendingUpload, {
+    const { fileId } = await t.mutation(internal.files.createPendingUpload, {
       businessId: businessAId,
     });
     // Simulate the caller PUTting bytes to the signed upload URL, exactly
@@ -237,21 +237,21 @@ describe("products.deliverableFileUrl: file upload integration", () => {
     const storageId = await t.run(async (ctx) =>
       ctx.storage.store(new Blob(["pattern bytes"], { type: "application/pdf" })),
     );
-    const completed = await t.mutation(api.files.completeUpload, {
+    const completed = await t.mutation(internal.files.completeUpload, {
       businessId: businessAId,
       fileId,
       storageId,
     });
     if (!completed) throw new Error("unreachable");
 
-    const updated = await t.mutation(api.products.update, {
+    const updated = await t.mutation(internal.products.update, {
       businessId: businessAId,
       productId: product._id,
       deliverableFileUrl: completed.url,
     });
     expect(updated?.deliverableFileUrl).toBe(completed.url);
 
-    const fetched = await t.query(api.products.getScopedById, {
+    const fetched = await t.query(internal.products.getScopedById, {
       productId: product._id,
       businessId: businessAId,
     });
@@ -276,14 +276,14 @@ describe("products.deliverableFileUrl: file upload integration", () => {
     // in business A can never end up wired to business B's completed file
     // via this path: the only way to get a real, fetchable `completed.url`
     // is to complete the upload as the owning business first.
-    const { fileId } = await t.mutation(api.files.createPendingUpload, {
+    const { fileId } = await t.mutation(internal.files.createPendingUpload, {
       businessId: businessBId,
     });
     const storageId = await t.run(async (ctx) =>
       ctx.storage.store(new Blob(["not yours"], { type: "text/plain" })),
     );
 
-    const crossTenantComplete = await t.mutation(api.files.completeUpload, {
+    const crossTenantComplete = await t.mutation(internal.files.completeUpload, {
       businessId: businessAId,
       fileId,
       storageId,

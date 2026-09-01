@@ -2,6 +2,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { StripeSignatureError, constructStripeEvent } from "@/lib/stripe/webhook";
+import { getConvexServiceSecret } from "@/lib/api/serviceSecret";
 
 // Inbound Stripe webhook. Deliberately not a /v1/* route: this is Stripe
 // calling us, not an API-key-authenticated platform client, so it doesn't
@@ -47,11 +48,12 @@ export async function POST(req: Request) {
         payouts_enabled?: boolean;
       };
       const client = getConvexClient();
-      await client.mutation(api.payouts.updateConnectStatusByStripeAccountId, {
+      await client.action(api.payoutsActions.updateConnectStatusByStripeAccountId, {
         stripeConnectAccountId: account.id,
         detailsSubmitted: account.details_submitted ?? false,
         chargesEnabled: account.charges_enabled ?? false,
         payoutsEnabled: account.payouts_enabled ?? false,
+        secret: getConvexServiceSecret(),
       });
       break;
     }
@@ -77,13 +79,14 @@ export async function POST(req: Request) {
       }
 
       const client = getConvexClient();
-      await client.mutation(api.orders.createFromCheckoutSession, {
+      await client.action(api.ordersActions.createFromCheckoutSession, {
         businessId: businessId as Id<"businesses">,
         productId: productId as Id<"products">,
         customerEmail,
         amountCents: session.amount_total,
         currency: session.currency,
         stripeCheckoutSessionId: session.id,
+        secret: getConvexServiceSecret(),
       });
       break;
     }

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { apiError } from "./envelope";
+import { getConvexServiceSecret } from "./serviceSecret";
 
 const MIN_LEN = 1;
 const MAX_LEN = 128;
@@ -60,11 +61,12 @@ export async function withIdempotency(
 ): Promise<NextResponse> {
   const requestHash = await hashBody(rawBody);
 
-  const claim = await client.mutation(api.idempotencyKeys.beginOrReplay, {
+  const claim = await client.action(api.idempotencyKeysActions.beginOrReplay, {
     businessId,
     route,
     key: idempotencyKey,
     requestHash,
+    secret: getConvexServiceSecret(),
   });
 
   if (claim.outcome === "conflict") {
@@ -100,10 +102,11 @@ export async function withIdempotency(
   }
   const responseBody = await response.clone().text();
 
-  await client.mutation(api.idempotencyKeys.complete, {
+  await client.action(api.idempotencyKeysActions.complete, {
     id: recordId,
     responseStatus: response.status,
     responseBody,
+    secret: getConvexServiceSecret(),
   });
 
   return response;
