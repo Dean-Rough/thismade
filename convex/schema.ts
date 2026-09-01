@@ -115,6 +115,8 @@ export default defineSchema({
   // Phase 3 (agent core, THI-8): CEO->worker kanban board. Lifecycle is
   // strictly todo -> in_progress -> needs_review -> done; see
   // convex/agentTasks.ts advanceStatus for the allowed-transition table.
+  // `pendingApproval` (THI-66) is an orthogonal in_progress-only side gate,
+  // not a fifth kanban column — see that field's own comment below.
   agentTasks: defineTable({
     businessId: v.id("businesses"),
     title: v.string(),
@@ -150,6 +152,37 @@ export default defineSchema({
     // failure. A circuit-broken task must surface for owner/CEO attention,
     // never silently retry again.
     circuitBroken: v.boolean(),
+    // THI-66: set by agentTasks.requestToolApproval when the worker loop
+    // pauses before executing a destructive tool call (see
+    // convex/lib/workerTools.ts's isDestructiveToolCall), cleared by
+    // agentTasks.resolveToolApproval. Distinct from the needs_review -> done
+    // gate: status stays "in_progress" while this is set — a destructive
+    // call can happen well before a task otherwise finishes.
+    pendingApproval: v.optional(
+      v.object({
+        toolName: v.string(),
+        argsSummary: v.string(),
+        // THI-74 Finding 3: hash of the full, untruncated args — see
+        // convex/lib/workerLoop.ts's hashToolArgs. argsSummary alone
+        // (truncated at 500 chars) let a resumed call diverge past that
+        // boundary and still match; this is what the gate actually
+        // compares on resume.
+        argsHash: v.string(),
+        requestedAt: v.number(),
+      }),
+    ),
+    // THI-73 Finding 2: the atomic claim beginResumedWorkerRun stamps before
+    // a resumed run (post-approval) starts executing, mirroring how the
+    // todo -> in_progress transition itself is beginWorkerRun's claim for a
+    // fresh dispatch. Status alone can't serve that role here because it
+    // stays "in_progress" across an entire pause/resume cycle — without this,
+    // a duplicate resumeWorkerTask schedule (redelivery, a future caller
+    // mistake) could pass a read-only precondition check twice and run two
+    // sandboxes against the same task. Cleared by requestToolApproval (a
+    // resumed run that pauses again on a second destructive call must let a
+    // later approval claim again) and recordAttemptFailure (same reasoning
+    // for a future retry path).
+    resumeClaimedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
