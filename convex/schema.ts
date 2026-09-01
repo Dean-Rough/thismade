@@ -270,4 +270,31 @@ export default defineSchema({
   })
     .index("by_business", ["businessId"])
     .index("by_business_skill_key", ["businessId", "skillKey"]),
+
+  // THI-92: persists which domain belongs to which business, its DNS
+  // verification status, and the exact records the owner must add. Split out
+  // of THI-18 (Domains UI), which found no backend for this existed —
+  // scripts/deploy-storefront.mjs only shells a one-shot `vercel domains add`
+  // at deploy time for the platform-managed `{slug}.storefronts.rough.ink`
+  // subdomain and persists nothing. See convex/domains.ts for why a
+  // platform-managed hostname gets an empty `records` array (Vercel
+  // auto-provisions DNS for that zone; there's nothing for the owner to add).
+  domains: defineTable({
+    businessId: v.id("businesses"),
+    hostname: v.string(),
+    status: v.union(v.literal("pending"), v.literal("verified"), v.literal("failed")),
+    records: v.array(
+      v.object({
+        type: v.string(),
+        host: v.string(),
+        value: v.string(),
+      }),
+    ),
+    createdAt: v.number(),
+    lastCheckedAt: v.union(v.number(), v.null()),
+  })
+    .index("by_business", ["businessId"])
+    // Hostnames are globally unique (DNS itself enforces this), so addDomain
+    // checks this index before inserting rather than only scoping by business.
+    .index("by_hostname", ["hostname"]),
 });
