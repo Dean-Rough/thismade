@@ -427,8 +427,31 @@ async function validateNavigationUrl(
 // quote, never inferred or repaired after the fact. Every branch advances
 // the scan position by at least one character, so there is no ambiguous
 // interpretation left to backtrack through: this is worst-case
-// O(html.length) for any input, and it matches real browser parsing exactly
-// (closing the THI-82/THI-84 correctness gap and this one in the same pass).
+// O(html.length) for any input, and its tag/attribute *boundary* matching
+// tracks real browser parsing exactly (closing the THI-82/THI-84
+// correctness gap and this one in the same pass).
+//
+// scanLinkTag deliberately stops at finding attribute boundaries and raw
+// values - it does not decode HTML character references (`&#112;`,
+// `&NewLine;`, etc.), which the WHATWG tokenizer *does* resolve inside every
+// attribute-value state (quoted or not) before the value reaches userland.
+// An independent review of this fix found that gap live: `rel=&#112;reconnect`
+// (or a `&Tab;`/`&NewLine;`-encoded separator hiding "preconnect" behind a
+// fake token boundary, e.g. `rel="stylesheet&#32;preconnect"`) builds a
+// genuine `rel="preconnect"` element in real Chromium while the raw slice
+// never token-matches "preconnect" or "dns-prefetch" - the same
+// "filter never fires" bypass class THI-86 was opened to close, just via a
+// different mechanism than the atomic-group dead end. decodeRelValue below
+// closes it: numeric character references (`&#DDD;`/`&#xHHH;`, decimal or
+// hex) can encode any code point including a bare ASCII letter, so they're
+// decoded generally; `&Tab;`/`&NewLine;` are the only two named references
+// in the full HTML5 named-reference table that decode to ASCII whitespace,
+// and are the only named refs handled here rather than importing that whole
+// table, since nothing else in it decodes to a plain ASCII letter, hyphen,
+// or whitespace character that could hide a rel token or its separator.
+// Both replacements are fixed-charclass regexes with no ambiguous
+// alternation, so this stays a single bounded pass with no backtracking,
+// same as scanLinkTag itself.
 function scanLinkTag(html: string, start: number): { end: number; relValues: string[] } {
   const n = html.length;
   const relValues: string[] = [];
@@ -470,29 +493,71 @@ function scanLinkTag(html: string, start: number): { end: number; relValues: str
   return { end: -1, relValues };
 }
 
-export function stripSpeculativeLinkTags(html: string): string {
-  let result = "";
-  let i = 0;
-  const n = html.length;
-  while (i < n) {
-    if (html[i] === "<" && /^<link[\s/>]/i.test(html.slice(i, i + 6))) {
-      const { end, relValues } = scanLinkTag(html, i);
-      if (end === -1) {
-        // No reachable '>' - per the WHATWG tokenizer's EOF-in-tag handling
-        // this markup never becomes a live element in the browser either, so
-        // passing it through unstripped is safe rather than merely lenient.
-        result += html.slice(i);
-        break;
-      }
-      result += relValues.some((v) => hasBlockedLinkRel(v))
-        ? "<!-- thismade: stripped speculative link -->"
-        : html.slice(i, end);
-      i = end;
-      continue;
+// Invalid numeric references (a surrogate half, code point 0, or anything
+// past U+10FFFF) decode to U+FFFD - the WHATWG numeric-character-reference
+// error-recovery outcome - rather than throwing or being left as literal
+// digits: attacker-controlled input reaching this function should never be
+// able to crash stripSpeculativeLinkTags/stripSpeculativeLinkMarkup, since a
+// thrown exception here would itself be a fail-open bug, the same class
+// this whole file exists to close.
+function decodeRelValue(value: string): string {
+  const toChar = (codePoint: number): string => {
+    if (!Number.isFinite(codePoint) || codePoint <= 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+      return "�";
     }
-    result += html[i];
-    i++;
+    return String.fromCodePoint(codePoint);
+  };
+  return value
+    .replace(/&#[xX]([0-9a-fA-F]+);?/g, (_, hex: string) => toChar(parseInt(hex, 16)))
+    .replace(/&#([0-9]+);?/g, (_, dec: string) => toChar(parseInt(dec, 10)))
+    .replace(/&Tab;/g, "\t")
+    .replace(/&NewLine;/g, "\n");
+}
+
+// Scans forward to the next possible "<link" occurrence via a single global
+// regex pass instead of testing every character individually and appending
+// one character at a time to the result - the latter cost ~100x throughput
+// on large benign document bodies (measured: ~130ms vs ~1ms on a 3.6MB
+// body) for no correctness benefit, since scanLinkTag above already does
+// the real per-tag work. This runs on the literal HTTP response body of
+// every document navigate() visits, so the constant factor matters even
+// though both versions are linear. The regex itself (`<link` plus one fixed
+// boundary character) has no quantifier ambiguity to backtrack through.
+export function stripSpeculativeLinkTags(html: string): string {
+  const startPattern = /<link[\s/>]/gi;
+  let result = "";
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = startPattern.exec(html))) {
+    result += html.slice(cursor, match.index);
+    const { end, relValues } = scanLinkTag(html, match.index);
+    if (end === -1) {
+      // No reachable '>' - per the WHATWG tokenizer's EOF-in-tag handling,
+      // this markup never becomes a live element for the HTTP-body-rewrite
+      // path this function serves (a full response body is always parsed as
+      // one finite document, so "no more input" really does mean EOF here),
+      // so passing it through unstripped is safe rather than merely
+      // lenient. That reasoning does NOT extend to every caller of the
+      // mirrored logic - see the addInitScript mirror's
+      // stripSpeculativeLinkMarkup, whose document.write/writeln callers can
+      // complete an unterminated tag across a later call (tracked
+      // separately as a THI-86 follow-up, not fixed here).
+      result += html.slice(match.index);
+      cursor = html.length;
+      break;
+    }
+    result += relValues.some((v) => hasBlockedLinkRel(decodeRelValue(v)))
+      ? "<!-- thismade: stripped speculative link -->"
+      : html.slice(match.index, end);
+    cursor = end;
+    // Resume scanning after the tag scanLinkTag actually consumed, not
+    // merely after this 6-character boundary match - otherwise a nested
+    // "<link" inside an already-handled attribute value (e.g.
+    // data-x="<link rel=preconnect>") would be found again and reprocessed
+    // from a position before `cursor`, duplicating output.
+    startPattern.lastIndex = end;
   }
+  result += html.slice(cursor);
   return result;
 }
 
@@ -735,11 +800,15 @@ async function pinHostname(hostname, existingRules) {
 //      an ordinary fetch does - closed via the same stripSpeculativeLinkTags
 //      rewrite regardless of the answer.
 // THI-86: see the Node-side stripSpeculativeLinkTags/scanLinkTag mirror's
-// module-level comment for the full root-cause history and why backtracking
-// regex was dropped entirely for this tag boundary in favor of a single-pass
-// WHATWG-style tokenizer (same functions, hand-copied - this driver script
-// runs as its own file in the sandbox, not imported from this module, so
-// there's no way to share one implementation across both realms).
+// module-level comment for the full root-cause history (why backtracking
+// regex was dropped entirely for this tag boundary in favor of a
+// single-pass WHATWG-style tokenizer) and for decodeRelValue below (why
+// scanLinkTag's raw attribute values still need HTML character-reference
+// decoding before the blocked-rel check, closing a live bypass an
+// independent review found in this exact tokenizer). Same functions,
+// hand-copied - this driver script runs as its own file in the sandbox, not
+// imported from this module, so there's no way to share one implementation
+// across both realms.
 function scanLinkTag(html, start) {
   const n = html.length;
   const relValues = [];
@@ -781,30 +850,50 @@ function scanLinkTag(html, start) {
   return { end: -1, relValues };
 }
 
-function stripSpeculativeLinkTags(html) {
-  let result = "";
-  let i = 0;
-  const n = html.length;
-  while (i < n) {
-    if (html[i] === "<" && /^<link[\\s\\/>]/i.test(html.slice(i, i + 6))) {
-      const scan = scanLinkTag(html, i);
-      if (scan.end === -1) {
-        result += html.slice(i);
-        break;
-      }
-      const isBlocked = scan.relValues.some((v) =>
-        String(v || "")
-          .toLowerCase()
-          .split(/\\s+/)
-          .some((token) => token === "preconnect" || token === "dns-prefetch"),
-      );
-      result += isBlocked ? "<!-- thismade: stripped speculative link -->" : html.slice(i, scan.end);
-      i = scan.end;
-      continue;
+function decodeRelValue(value) {
+  function toChar(codePoint) {
+    if (!Number.isFinite(codePoint) || codePoint <= 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+      return "\\ufffd";
     }
-    result += html[i];
-    i++;
+    return String.fromCodePoint(codePoint);
   }
+  return value
+    .replace(/&#[xX]([0-9a-fA-F]+);?/g, (_, hex) => toChar(parseInt(hex, 16)))
+    .replace(/&#([0-9]+);?/g, (_, dec) => toChar(parseInt(dec, 10)))
+    .replace(/&Tab;/g, "\\t")
+    .replace(/&NewLine;/g, "\\n");
+}
+
+function isBlockedRelValue(v) {
+  return String(v || "")
+    .toLowerCase()
+    .split(/\\s+/)
+    .some((token) => token === "preconnect" || token === "dns-prefetch");
+}
+
+function stripSpeculativeLinkTags(html) {
+  const startPattern = /<link[\\s\\/>]/gi;
+  let result = "";
+  let cursor = 0;
+  let match;
+  while ((match = startPattern.exec(html))) {
+    result += html.slice(cursor, match.index);
+    const scan = scanLinkTag(html, match.index);
+    if (scan.end === -1) {
+      // See the Node-side mirror's comment for why this is safe on this
+      // (HTTP-body-rewrite) path specifically, and not safe to assume for
+      // document.write/writeln (see stripSpeculativeLinkMarkup below).
+      result += html.slice(match.index);
+      cursor = html.length;
+      break;
+    }
+    result += scan.relValues.some((v) => isBlockedRelValue(decodeRelValue(v)))
+      ? "<!-- thismade: stripped speculative link -->"
+      : html.slice(match.index, scan.end);
+    cursor = scan.end;
+    startPattern.lastIndex = scan.end;
+  }
+  result += html.slice(cursor);
   return result;
 }
 
@@ -1036,12 +1125,27 @@ async function navigateWithPinning(targetUrl, rules) {
       // regex).
       //
       // THI-86: same tokenizer rewrite as the other two mirrors, closing a
-      // full bypass the THI-84 atomic-group emulation introduced (see the
-      // Node-side stripSpeculativeLinkTags/scanLinkTag mirror's module-level
-      // comment for the full explanation - same functions, hand-copied; this
-      // closure runs in the page's own JS realm on attacker-influenced
-      // innerHTML/document.write input, so it's exposed to the same bypass
-      // as the body-rewrite mirror above).
+      // full bypass the THI-84 atomic-group emulation introduced, plus the
+      // same character-reference decoding fix (decodeRelValue below) for a
+      // second bypass an independent review found live in this exact
+      // tokenizer (see the Node-side stripSpeculativeLinkTags/scanLinkTag
+      // mirror's module-level comment for the full explanation of both -
+      // same functions, hand-copied; this closure runs in the page's own JS
+      // realm on attacker-influenced innerHTML/document.write input, so
+      // it's exposed to the same bypasses as the body-rewrite mirror above).
+      //
+      // THI-86 follow-up (not fixed here, tracked separately): the same
+      // review found that document.write/writeln's persistent input stream
+      // breaks the "no reachable '>' means never a live element" reasoning
+      // stripSpeculativeLinkMarkup's end===-1 branch relies on - a tag left
+      // unterminated by one write() call can be completed by the next one
+      // (confirmed live: document.write('<link rel=preconnect href="//x/');
+      // followed by document.write('">') builds a real preconnect link,
+      // the same cross-call class THI-81 Finding 1 closed for split
+      // arguments *within* one call, but not across calls). Flagged rather
+      // than fixed in this pass since closing it properly needs a
+      // persistent pending-tail buffer across write/writeln invocations,
+      // not just this tokenizer.
       function scanLinkTag(html, start) {
         const n = html.length;
         const relValues = [];
@@ -1083,27 +1187,45 @@ async function navigateWithPinning(targetUrl, rules) {
         return { end: -1, relValues };
       }
 
+      function decodeRelValue(value) {
+        function toChar(codePoint) {
+          if (!Number.isFinite(codePoint) || codePoint <= 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+            return "\\ufffd";
+          }
+          return String.fromCodePoint(codePoint);
+        }
+        return value
+          .replace(/&#[xX]([0-9a-fA-F]+);?/g, (_, hex) => toChar(parseInt(hex, 16)))
+          .replace(/&#([0-9]+);?/g, (_, dec) => toChar(parseInt(dec, 10)))
+          .replace(/&Tab;/g, "\\t")
+          .replace(/&NewLine;/g, "\\n");
+      }
+
       function stripSpeculativeLinkMarkup(html) {
         const str = String(html == null ? "" : html);
+        const startPattern = /<link[\\s\\/>]/gi;
         let result = "";
-        let i = 0;
-        const n = str.length;
-        while (i < n) {
-          if (str[i] === "<" && /^<link[\\s\\/>]/i.test(str.slice(i, i + 6))) {
-            const scan = scanLinkTag(str, i);
-            if (scan.end === -1) {
-              result += str.slice(i);
-              break;
-            }
-            result += scan.relValues.some((v) => hasBlockedLinkRel(v))
-              ? "<!-- thismade: stripped speculative link -->"
-              : str.slice(i, scan.end);
-            i = scan.end;
-            continue;
+        let cursor = 0;
+        let match;
+        while ((match = startPattern.exec(str))) {
+          result += str.slice(cursor, match.index);
+          const scan = scanLinkTag(str, match.index);
+          if (scan.end === -1) {
+            // Safe for the innerHTML/outerHTML/insertAdjacentHTML callers
+            // below (each parses one finite fragment per call). NOT safe to
+            // assume for document.write/writeln - see the THI-86 follow-up
+            // note above scanLinkTag.
+            result += str.slice(match.index);
+            cursor = str.length;
+            break;
           }
-          result += str[i];
-          i++;
+          result += scan.relValues.some((v) => hasBlockedLinkRel(decodeRelValue(v)))
+            ? "<!-- thismade: stripped speculative link -->"
+            : str.slice(match.index, scan.end);
+          cursor = scan.end;
+          startPattern.lastIndex = scan.end;
         }
+        result += str.slice(cursor);
         return result;
       }
       for (const prop of ["innerHTML", "outerHTML"]) {
