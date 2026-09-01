@@ -245,15 +245,36 @@ async function resolveHostnameAddresses(hostname: string): Promise<string[]> {
   return records.map((record) => record.address);
 }
 
-// Validates a navigate() target before it ever reaches the sandbox's
-// Playwright driver: rejects non-http(s) schemes (file:, javascript:, data:,
-// …) and rejects loopback/private/link-local/metadata-range IPs, whether
-// given as a literal or reached by resolving a hostname. Fails closed on any
-// parse/lookup failure - an unverifiable target is not a safe target.
-async function validateNavigationUrl(
+export interface NavigationHopPlan {
+  hostname: string;
+  // A "MAP <hostname> <ip1>,<ip2>,…" host-resolver-rules directive to pin
+  // this hostname to the exact address(es) just validated, or null when
+  // there's nothing to pin: the hostname is already pinned from an earlier
+  // hop (reuse it, don't re-resolve - see below) or was itself an IP
+  // literal (no DNS involved, nothing can rebind).
+  newHostResolverRule: string | null;
+}
+
+// THI-72: the tested, single source of truth for how the sandboxed browser
+// driver decides whether to allow one navigation hop (the navigate() target
+// itself, or a same-call redirect/subresource target) through, and whether
+// it needs a fresh DNS resolution or can reuse a hop already pinned earlier
+// in the same call. This is deliberately reusable for that purpose, not just
+// a helper for validateNavigationUrl below: it's what closes the DNS-
+// rebinding TOCTOU gap, by refusing to re-resolve a hostname once it's been
+// pinned (an attacker flipping DNS between hop N and hop N+1 for the *same*
+// hostname can't get a different answer once we've committed to one), and by
+// giving each redirect hop its own resolve-then-immediately-pin step instead
+// of validating the first URL and then letting every hop after it go
+// unchecked. BROWSER_DRIVER_SCRIPT's `pinHostname` is a hand-written mirror
+// of this exact algorithm - it can't import this module, since it runs as a
+// wholly separate Node process inside the E2B sandbox - so treat this
+// function as the spec that mirror must match.
+export async function planNavigationHop(
   rawUrl: string,
+  alreadyPinnedHostnames: ReadonlySet<string>,
   resolveHostname: (hostname: string) => Promise<string[]>,
-): Promise<void> {
+): Promise<NavigationHopPlan> {
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -274,7 +295,11 @@ async function validateNavigationUrl(
     if (isBlockedIpAddress(hostname)) {
       throw new Error(`navigate_blocked:private_address:${hostname}`);
     }
-    return;
+    return { hostname, newHostResolverRule: null };
+  }
+
+  if (alreadyPinnedHostnames.has(hostname)) {
+    return { hostname, newHostResolverRule: null };
   }
 
   let addresses: string[];
@@ -286,6 +311,28 @@ async function validateNavigationUrl(
   if (addresses.length === 0 || addresses.some((address) => isBlockedIpAddress(address))) {
     throw new Error(`navigate_blocked:private_address:${hostname}`);
   }
+  return { hostname, newHostResolverRule: `MAP ${hostname} ${addresses.join(",")}` };
+}
+
+// Validates a navigate() target before it's even sent to the sandbox as a
+// command: rejects non-http(s) schemes (file:, javascript:, data:, …) and
+// rejects loopback/private/link-local/metadata-range IPs, whether given as a
+// literal or reached by resolving a hostname. Fails closed on any
+// parse/lookup failure - an unverifiable target is not a safe target.
+//
+// THI-72: this is a fail-fast pre-check, not the DNS-rebinding boundary - it
+// runs in the Convex process, and by the time its answer reaches the
+// sandbox's Playwright driver (a `runCommand` round trip later, possibly
+// after an npm install), the resolution it saw can be stale. It still earns
+// its keep by rejecting obviously-bad targets before spending a sandbox
+// command on them, but the actual enforcement now also happens inside the
+// driver itself via planNavigationHop's pin-then-connect sequencing, which
+// runs in the same process that opens the connection.
+async function validateNavigationUrl(
+  rawUrl: string,
+  resolveHostname: (hostname: string) => Promise<string[]>,
+): Promise<void> {
+  await planNavigationHop(rawUrl, new Set(), resolveHostname);
 }
 
 // A fresh Playwright launch per call, restoring only the last-visited URL
@@ -297,48 +344,254 @@ const BROWSER_DRIVER_PATH = "/tmp/thismade-browser-driver.mjs";
 const BROWSER_STATE_PATH = "/tmp/thismade-browser-state.json";
 const BROWSER_READY_MARKER = "/tmp/.thismade-browser-ready";
 
-const BROWSER_DRIVER_SCRIPT = `
+// THI-72: caps how many times navigateWithPinning will relaunch Chromium to
+// pin a newly-seen hostname reached mid-navigation (a redirect chain, or a
+// page that bounces through several hosts). This is the circuit breaker for
+// that loop - without it, a malicious/misconfigured redirect chain that
+// keeps bouncing to fresh hostnames would relaunch the browser indefinitely
+// instead of failing closed.
+const MAX_REDIRECT_HOPS = 3;
+
+// Exported so a test can syntax-check the exact text written into the
+// sandbox (see workerTools.test.ts) - this environment has no E2B
+// credentials to actually execute it, so a parse check is the best
+// available guard against a template-literal escaping mistake shipping
+// silently.
+export const BROWSER_DRIVER_SCRIPT = `
 import { chromium } from "playwright";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 
 const STATE_PATH = ${JSON.stringify(BROWSER_STATE_PATH)};
+const MAX_REDIRECT_HOPS = ${JSON.stringify(MAX_REDIRECT_HOPS)};
 const [, , action, argsJson] = process.argv;
 const args = JSON.parse(argsJson || "{}");
 
 function loadState() {
-  if (!existsSync(STATE_PATH)) return { url: null };
-  return JSON.parse(readFileSync(STATE_PATH, "utf8"));
+  if (!existsSync(STATE_PATH)) return { url: null, hostResolverRules: [] };
+  const state = JSON.parse(readFileSync(STATE_PATH, "utf8"));
+  state.hostResolverRules = state.hostResolverRules || [];
+  return state;
 }
 function saveState(state) {
   writeFileSync(STATE_PATH, JSON.stringify(state));
 }
 
-const browser = await chromium.launch();
-const page = await browser.newPage();
+// THI-72: hand-written mirror of convex/lib/workerTools.ts's
+// isBlockedIpv4/isBlockedIpv6/isBlockedIpAddress. This script runs as a
+// separate Node process inside the E2B sandbox and can't import that module,
+// so the blocklist is duplicated here rather than shared at runtime - keep
+// the two in sync by hand.
+function isBlockedIpv4(address) {
+  const octets = address.split(".");
+  if (octets.length !== 4) return true;
+  const parts = octets.map(Number);
+  if (parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return true;
+  const a = parts[0];
+  const b = parts[1];
+  if (a === 0) return true;
+  if (a === 127) return true;
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 169 && b === 254) return true;
+  return false;
+}
+function isBlockedIpv6(address) {
+  const normalized = address.toLowerCase();
+  if (normalized === "::1" || normalized === "::") return true;
+  const mapped = normalized.match(/^::ffff:(\\d+\\.\\d+\\.\\d+\\.\\d+)$/);
+  if (mapped) return isBlockedIpv4(mapped[1]);
+  const first = parseInt(normalized.split(":")[0] || "", 16);
+  if (Number.isNaN(first)) return true;
+  if (first >= 0xfc00 && first <= 0xfdff) return true;
+  if (first >= 0xfe80 && first <= 0xfebf) return true;
+  return false;
+}
+function isBlockedIpAddress(address) {
+  const family = isIP(address);
+  if (family === 4) return isBlockedIpv4(address);
+  if (family === 6) return isBlockedIpv6(address);
+  return true;
+}
+
+const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
+
+function parseHostname(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("navigate_blocked:unparseable_url:" + rawUrl);
+  }
+  if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
+    throw new Error("navigate_blocked:disallowed_scheme:" + parsed.protocol);
+  }
+  const hostname = parsed.hostname.replace(/^\\[/, "").replace(/\\]$/, "");
+  if (!hostname) {
+    throw new Error("navigate_blocked:missing_host:" + rawUrl);
+  }
+  return hostname;
+}
+
+// Mirrors convex/lib/workerTools.ts's planNavigationHop: resolves and
+// validates a hostname once, then pins it via a host-resolver-rules MAP
+// directive so Chromium connects to exactly the address just validated
+// instead of doing its own independent (and possibly rebound) lookup. A
+// hostname already pinned this call is reused rather than re-resolved -
+// re-resolving on every hop would reopen the same rebinding window for
+// repeat visits to the same host within one navigation chain.
+async function pinHostname(hostname, existingRules) {
+  if (isIP(hostname)) {
+    if (isBlockedIpAddress(hostname)) {
+      throw new Error("navigate_blocked:private_address:" + hostname);
+    }
+    return null;
+  }
+  const already = existingRules.some((rule) => rule.startsWith("MAP " + hostname + " "));
+  if (already) return null;
+  let addresses;
+  try {
+    addresses = (await lookup(hostname, { all: true })).map((r) => r.address);
+  } catch {
+    throw new Error("navigate_blocked:dns_resolution_failed:" + hostname);
+  }
+  if (addresses.length === 0 || addresses.some(isBlockedIpAddress)) {
+    throw new Error("navigate_blocked:private_address:" + hostname);
+  }
+  return "MAP " + hostname + " " + addresses.join(",");
+}
+
+// Navigates to targetUrl, relaunching Chromium with an extended
+// --host-resolver-rules set whenever the navigation (the initial load, or a
+// same-call redirect it follows) reaches a hostname not yet pinned. Every
+// request the page makes - not just the top-level navigation - is checked
+// through the same context.route() interceptor before Chromium is allowed to
+// touch it, so a redirect or a subresource load can't reach an unpinned host
+// unchecked. THI-72: this is what ties the IP validated at resolve time to
+// the IP actually connected to, for every hop, instead of validating one URL
+// up front and then trusting whatever the browser's own resolver does next.
+//
+// THI-72 follow-up: page.route() only ever covers the single page it's
+// registered on, and Playwright never routes WebSocket connections through
+// it at all - so a scraped/prompt-injected page's own JS could previously
+// reach an unpinned/unvalidated host via window.open(...) (a second,
+// unrouted page) or new WebSocket(...) with zero DNS pinning. Registering
+// on the context instead of the page covers every page the context ever
+// creates (including popups), closing spawned popups outright removes the
+// unrouted-second-page window entirely, and routeWebSocket()/blocking
+// service workers closes the other two request paths context.route() still
+// can't see.
+async function navigateWithPinning(targetUrl, rules) {
+  let currentRules = rules.slice();
+  let pendingUrl = targetUrl;
+  for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop++) {
+    const hostname = parseHostname(pendingUrl);
+    const rule = await pinHostname(hostname, currentRules);
+    if (rule) currentRules.push(rule);
+
+    const browser = await chromium.launch(
+      currentRules.length ? { args: ["--host-resolver-rules=" + currentRules.join(",")] } : {},
+    );
+    const context = await browser.newContext({ serviceWorkers: "block" });
+    context.on("page", (extraPage) => {
+      extraPage.close().catch(() => {});
+    });
+    await context.routeWebSocket("**/*", (route) => route.close());
+    const page = await context.newPage();
+    let redirectTarget = null;
+    await context.route("**/*", async (route) => {
+      const reqUrl = route.request().url();
+      let reqHostname;
+      try {
+        reqHostname = parseHostname(reqUrl);
+      } catch {
+        await route.abort("blockedbyclient");
+        return;
+      }
+      if (isIP(reqHostname)) {
+        if (isBlockedIpAddress(reqHostname)) {
+          await route.abort("blockedbyclient");
+          return;
+        }
+        await route.continue();
+        return;
+      }
+      const pinned = currentRules.some((r) => r.startsWith("MAP " + reqHostname + " "));
+      if (pinned) {
+        await route.continue();
+        return;
+      }
+      // A hostname we haven't pinned yet - most commonly a top-level redirect
+      // target. Don't let Chromium resolve it on its own; abort this request
+      // and let the outer loop relaunch with this host pinned before
+      // retrying. Only a *main-frame* navigation qualifies as a redirect to
+      // chase: isNavigationRequest() is also true for iframe navigations,
+      // and treating one of those as "the" redirect target would hijack the
+      // whole page's next navigation attempt to wherever an iframe (or a
+      // page-injected one) was pointed - an unpinned iframe/subresource load
+      // is simply blocked instead, same as any other unpinned subresource.
+      if (route.request().isNavigationRequest() && route.request().frame() === page.mainFrame() && redirectTarget === null) {
+        redirectTarget = reqUrl;
+      }
+      await route.abort("blockedbyclient");
+    });
+
+    let navError = null;
+    try {
+      await page.goto(pendingUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    } catch (err) {
+      navError = err;
+    }
+
+    if (redirectTarget) {
+      await browser.close();
+      pendingUrl = redirectTarget;
+      continue;
+    }
+    if (navError) {
+      await browser.close();
+      throw navError;
+    }
+    return { browser, page, finalUrl: page.url(), rules: currentRules };
+  }
+  throw new Error("navigate_blocked:too_many_redirect_hops:" + targetUrl);
+}
+
 const state = loadState();
 let result = { ok: true };
+let browser = null;
 try {
-  if (state.url) {
-    await page.goto(state.url, { waitUntil: "domcontentloaded", timeout: 30000 });
-  }
+  let page;
   if (action === "navigate") {
-    await page.goto(args.url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    state.url = page.url();
+    const nav = await navigateWithPinning(args.url, state.hostResolverRules);
+    browser = nav.browser;
+    page = nav.page;
+    state.hostResolverRules = nav.rules;
+    state.url = nav.finalUrl;
     result.url = state.url;
-  } else if (action === "click") {
-    await page.click(args.selector, { timeout: 10000 });
-    state.url = page.url();
-    result.url = state.url;
-  } else if (action === "read_page_text") {
-    result.text = await page.innerText("body");
   } else {
-    throw new Error("unknown_action:" + action);
+    if (!state.url) throw new Error("no_active_page:" + action);
+    const restored = await navigateWithPinning(state.url, state.hostResolverRules);
+    browser = restored.browser;
+    page = restored.page;
+    state.hostResolverRules = restored.rules;
+    if (action === "click") {
+      await page.click(args.selector, { timeout: 10000 });
+      state.url = page.url();
+      result.url = state.url;
+    } else if (action === "read_page_text") {
+      result.text = await page.innerText("body");
+    } else {
+      throw new Error("unknown_action:" + action);
+    }
   }
   saveState(state);
 } catch (err) {
   result = { ok: false, error: String(err && err.message ? err.message : err) };
 } finally {
-  await browser.close();
+  if (browser) await browser.close();
 }
 process.stdout.write(JSON.stringify(result));
 `;
