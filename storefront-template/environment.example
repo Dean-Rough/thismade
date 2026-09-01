@@ -1,0 +1,24 @@
+# Deployment used by `npx convex dev` / `npx convex deploy`.
+CONVEX_DEPLOYMENT=
+
+NEXT_PUBLIC_CONVEX_URL=
+NEXT_PUBLIC_CONVEX_SITE_URL=
+
+# Identifies this deployment to the admin JWT gate (middleware.ts checks the
+# token's `sub` claim against this). Set by scripts/scaffold-storefront.mjs.
+BUSINESS_SLUG=
+
+# Unique per storefront. Used to sign/verify /admin session tokens.
+# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+ADMIN_JWT_SECRET=
+
+# Unique per storefront. Shared out-of-band with the platform dispatcher so
+# it can sign POST /api/fulfillment requests.
+FULFILLMENT_HMAC_SECRET=
+
+# Unique per storefront. Shared only between this Next.js server and this
+# storefront's own Convex deployment (convex/lib/serviceAuth.ts) — never
+# exposed to the client. Without it, NEXT_PUBLIC_CONVEX_URL being public
+# would let anyone call fulfillmentEvents.record/list directly (THI-53).
+# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+CONVEX_SERVICE_SECRET=
