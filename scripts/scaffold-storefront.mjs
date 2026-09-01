@@ -109,8 +109,12 @@ function substituteTokensInPlace(dir, tokens) {
   }
 }
 
-function run(command, args, cwd, env) {
-  console.log(`\n$ ${command} ${args.join(" ")}  (cwd: ${cwd})`);
+export function run(command, args, cwd, env, { redactArgAt } = {}) {
+  const shown =
+    redactArgAt == null
+      ? args
+      : args.map((arg, i) => (i === redactArgAt ? "<redacted>" : arg));
+  console.log(`\n$ ${command} ${shown.join(" ")}  (cwd: ${cwd})`);
   execFileSync(command, args, { cwd, env, stdio: "inherit" });
 }
 
@@ -183,6 +187,7 @@ function main() {
     ["convex", "env", "set", "CONVEX_SERVICE_SECRET", convexServiceSecret],
     outDir,
     { ...env, CONVEX_AGENT_MODE: "anonymous" },
+    { redactArgAt: 4 },
   );
   run("npm", ["run", "gate"], outDir, env);
 
@@ -204,4 +209,6 @@ function main() {
   console.log(`Admin, fulfillment, and Convex service secrets were generated fresh and written to ${outDir}/.env.local (gitignored).`);
 }
 
-main();
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main();
+}
