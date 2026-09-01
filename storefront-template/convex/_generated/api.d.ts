@@ -9,6 +9,8 @@
  */
 
 import type * as fulfillmentEvents from "../fulfillmentEvents.js";
+import type * as fulfillmentEventsActions from "../fulfillmentEventsActions.js";
+import type * as lib_serviceAuth from "../lib/serviceAuth.js";
 
 import type {
   ApiFromModules,
@@ -18,6 +20,8 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   fulfillmentEvents: typeof fulfillmentEvents;
+  fulfillmentEventsActions: typeof fulfillmentEventsActions;
+  "lib/serviceAuth": typeof lib_serviceAuth;
 }>;
 
 /**

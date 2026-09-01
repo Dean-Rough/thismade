@@ -15,3 +15,10 @@ ADMIN_JWT_SECRET=
 # Unique per storefront. Shared out-of-band with the platform dispatcher so
 # it can sign POST /api/fulfillment requests.
 FULFILLMENT_HMAC_SECRET=
+
+# Unique per storefront. Shared only between this Next.js server and this
+# storefront's own Convex deployment (convex/lib/serviceAuth.ts) — never
+# exposed to the client. Without it, NEXT_PUBLIC_CONVEX_URL being public
+# would let anyone call fulfillmentEvents.record/list directly (THI-53).
+# Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+CONVEX_SERVICE_SECRET=
