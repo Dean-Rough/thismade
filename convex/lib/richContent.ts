@@ -70,6 +70,27 @@ export const errorEvent = v.object({
   message: v.string(),
 });
 
+// THI-66: the worker loop paused instead of executing a destructive tool
+// call (see workerTools.ts's isDestructiveToolCall) — distinct from
+// errorEvent so a gated call reads on the timeline as "waiting for a
+// decision," not as a failure.
+export const toolCallPendingApprovalEvent = v.object({
+  kind: v.literal("tool_call_pending_approval"),
+  taskId: v.id("agentTasks"),
+  toolName: v.string(),
+  argsSummary: v.string(),
+});
+
+// THI-66: the owner/CEO's decision on a tool_call_pending_approval event —
+// logged by agentTasks.resolveToolApproval, actor is always "owner" or
+// "ceo" (that mutation's arg validator rejects anything else).
+export const toolCallApprovalDecisionEvent = v.object({
+  kind: v.literal("tool_call_approval_decision"),
+  taskId: v.id("agentTasks"),
+  toolName: v.string(),
+  decision: v.union(v.literal("approved"), v.literal("denied")),
+});
+
 export const richContentEvent = v.union(
   chatMessageEvent,
   dispatchEvent,
@@ -79,4 +100,6 @@ export const richContentEvent = v.union(
   fileDiffEvent,
   creditDebitEvent,
   errorEvent,
+  toolCallPendingApprovalEvent,
+  toolCallApprovalDecisionEvent,
 );

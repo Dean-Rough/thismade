@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { getScoped } from "./lib/tenancy";
 import { logEvent } from "./lib/events";
 import { spendCredits } from "./creditLedger";
@@ -330,7 +331,10 @@ export const recordAttemptFailure = internalMutation({
     const attemptCount = task.attemptCount + 1;
     const circuitBroken = attemptCount >= task.maxAttempts;
     const now = Date.now();
-    await ctx.db.patch(args.taskId, { attemptCount, circuitBroken, updatedAt: now });
+    // THI-73 Finding 2: release any resume claim on failure too, so a
+    // not-yet-circuit-broken task remains eligible for a future resume path
+    // rather than being stuck claimed forever with nothing left to clear it.
+    await ctx.db.patch(args.taskId, { attemptCount, circuitBroken, resumeClaimedAt: undefined, updatedAt: now });
     await logEvent(ctx, {
       businessId: args.businessId,
       taskId: args.taskId,
@@ -338,6 +342,170 @@ export const recordAttemptFailure = internalMutation({
       event: { kind: "error", taskId: args.taskId, message: args.errorMessage },
       createdAt: now,
     });
+    return ctx.db.get(args.taskId);
+  },
+});
+
+// THI-66: the worker loop's (convex/lib/workerLoop.ts's
+// isDestructiveToolCall gate) only way to record that it paused instead of
+// executing a destructive tool call. No `actor` param — same
+// identity-boundary reasoning as beginWorkerRun/completeWorkerRun, this is
+// the loop's own infrastructure noting a pause, never a claim to be human.
+// Deliberately doesn't touch `status`: the gate is orthogonal to the
+// todo/in_progress/needs_review/done kanban lifecycle, not a fifth column —
+// a task can sit here mid-run, well before it would otherwise reach
+// needs_review.
+export const requestToolApproval = internalMutation({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+    toolName: v.string(),
+    argsSummary: v.string(),
+    // THI-74 Finding 3: the full-fidelity binding — see
+    // convex/lib/workerLoop.ts's hashToolArgs. argsSummary stays for what an
+    // owner/CEO actually reads when deciding; argsHash is what the gate
+    // compares against on resume.
+    argsHash: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
+    if (!task) {
+      return null;
+    }
+    if (task.circuitBroken) {
+      throw new Error("task_circuit_broken");
+    }
+    if (task.status !== "in_progress") {
+      throw new Error(`invalid_pending_approval_status:${task.status}`);
+    }
+    const now = Date.now();
+    await ctx.db.patch(args.taskId, {
+      pendingApproval: {
+        toolName: args.toolName,
+        argsSummary: args.argsSummary,
+        argsHash: args.argsHash,
+        requestedAt: now,
+      },
+      // THI-73 Finding 2: a resumed run that hits a second destructive call
+      // pauses here too (status stays "in_progress" the whole time), so the
+      // prior resume's claim must be released now — otherwise a later
+      // approval's resumeWorkerTask would find resumeClaimedAt still set
+      // and be unable to claim its own resume.
+      resumeClaimedAt: undefined,
+      updatedAt: now,
+    });
+    return ctx.db.get(args.taskId);
+  },
+});
+
+// THI-66: the only way to clear a pending destructive-call approval.
+// `actor` is restricted to "owner" | "ceo" at the argument-validator level
+// (narrower than the general ACTOR union) — the same human-in-the-loop
+// boundary as the needs_review -> done transition above, enforced earlier
+// here since there's no other business-logic branch that would otherwise
+// need to check it. A worker (or anything acting on its behalf via injected
+// instructions) has no path to this mutation at all.
+//
+// Idempotent by construction: this throws "no_pending_approval" once
+// pendingApproval has been cleared, so a retried call (network retry,
+// duplicate click) after the first one already resolved cannot re-decide or
+// double-schedule a resume — the same check-then-mutate guard used
+// elsewhere (dispatchKey, credit ledger, transitionTask's allowed-edges
+// check).
+export const resolveToolApproval = internalMutation({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+    actor: v.union(v.literal("owner"), v.literal("ceo")),
+    decision: v.union(v.literal("approved"), v.literal("denied")),
+  },
+  handler: async (ctx, args) => {
+    const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
+    if (!task) {
+      return null;
+    }
+    if (task.circuitBroken) {
+      throw new Error("task_circuit_broken");
+    }
+    if (!task.pendingApproval) {
+      throw new Error("no_pending_approval");
+    }
+    const { toolName, argsHash } = task.pendingApproval;
+    const now = Date.now();
+    await ctx.db.patch(args.taskId, { pendingApproval: undefined, updatedAt: now });
+    await logEvent(ctx, {
+      businessId: args.businessId,
+      taskId: args.taskId,
+      actor: args.actor,
+      event: { kind: "tool_call_approval_decision", taskId: args.taskId, toolName, decision: args.decision },
+      createdAt: now,
+    });
+
+    if (args.decision === "denied") {
+      // The task can't proceed on its own past a denied destructive call —
+      // hand it to needs_review so the owner/CEO decides what happens next
+      // (abandon, re-dispatch with amended instructions, etc.), the same
+      // in_progress -> needs_review edge completeWorkerRun uses for a
+      // normal finish.
+      return transitionTask(ctx, {
+        businessId: args.businessId,
+        taskId: args.taskId,
+        toStatus: "needs_review",
+        actor: args.actor,
+      });
+    }
+
+    // Approved: schedule a resumed run (convex/workerRunner.ts's
+    // resumeWorkerTask). No conversation or sandbox state survives the
+    // pause — see that function's own comment for why a resumed run
+    // replays `instructions` from scratch with a single-use grant rather
+    // than continuing mid-conversation. THI-73 Finding 1 / THI-74 Finding 3:
+    // the grant carries the approved argsHash alongside toolName, not just
+    // the name (Finding 1) and not the truncated argsSummary (Finding 3) —
+    // see workerLoop.ts's approvedCall/hashToolArgs for why.
+    await ctx.scheduler.runAfter(0, internal.workerRunner.resumeWorkerTask, {
+      businessId: args.businessId,
+      taskId: args.taskId,
+      approvedToolName: toolName,
+      approvedArgsHash: argsHash,
+    });
+    return ctx.db.get(args.taskId);
+  },
+});
+
+// THI-73 Finding 2: the atomic claim a resumed run needs, mirroring
+// beginWorkerRun's throw-on-second-caller semantics for a fresh dispatch.
+// Status transitions can't serve that role here — a resumed run doesn't
+// change `status` (it stays "in_progress" for the whole pause/resume
+// cycle) — so this compares-and-sets `resumeClaimedAt` instead: the first
+// caller to see it unset wins and stamps it; Convex mutations are
+// serializable per document, so a second concurrent call (scheduler
+// redelivery, a future caller mistake) reads the already-stamped value and
+// throws rather than also proceeding to run a second sandbox/loop against
+// the same task. Cleared by requestToolApproval and recordAttemptFailure
+// once this resumed run stops (paused again, or failed) so a later resume
+// can claim again.
+export const beginResumedWorkerRun = internalMutation({
+  args: {
+    businessId: v.id("businesses"),
+    taskId: v.id("agentTasks"),
+  },
+  handler: async (ctx, args) => {
+    const task = await getScoped<Doc<"agentTasks">>(ctx.db, args.taskId, args.businessId);
+    if (!task) {
+      return null;
+    }
+    if (task.circuitBroken) {
+      throw new Error("task_circuit_broken");
+    }
+    if (task.status !== "in_progress" || task.pendingApproval) {
+      throw new Error(`invalid_resume_claim_status:${task.status}`);
+    }
+    if (task.resumeClaimedAt !== undefined) {
+      throw new Error("resume_already_claimed");
+    }
+    const now = Date.now();
+    await ctx.db.patch(args.taskId, { resumeClaimedAt: now, updatedAt: now });
     return ctx.db.get(args.taskId);
   },
 });

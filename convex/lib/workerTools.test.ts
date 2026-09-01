@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executeTool, planNavigationHop, BROWSER_DRIVER_SCRIPT } from "./workerTools";
+import { executeTool, isDestructiveToolCall, planNavigationHop, BROWSER_DRIVER_SCRIPT } from "./workerTools";
 import type { ToolExecutionContext } from "./workerTools";
 import type { SandboxCommandResult, SandboxHandle } from "./sandboxProvider";
 
@@ -107,6 +107,30 @@ describe("executeTool navigate URL validation (THI-71)", () => {
     });
     expect(error).toBeUndefined();
     expect(sandbox.commands.length).toBeGreaterThan(0);
+  });
+});
+
+describe("isDestructiveToolCall (THI-66)", () => {
+  it("flags the coding worker's run_shell as destructive", () => {
+    expect(isDestructiveToolCall("coding", "run_shell")).toBe(true);
+  });
+
+  it("does not flag coding's other tools — they stay inside the sandbox workspace", () => {
+    expect(isDestructiveToolCall("coding", "read_file")).toBe(false);
+    expect(isDestructiveToolCall("coding", "write_file")).toBe(false);
+    expect(isDestructiveToolCall("coding", "list_directory")).toBe(false);
+  });
+
+  it("does not flag any browser or marketing tool — neither workerType has a destructive tool registered yet", () => {
+    expect(isDestructiveToolCall("browser", "navigate")).toBe(false);
+    expect(isDestructiveToolCall("browser", "click")).toBe(false);
+    expect(isDestructiveToolCall("browser", "read_page_text")).toBe(false);
+    expect(isDestructiveToolCall("marketing", "read_context_file")).toBe(false);
+    expect(isDestructiveToolCall("marketing", "submit_draft")).toBe(false);
+  });
+
+  it("does not throw or misclassify an unregistered tool name — callers must check assertToolAllowed separately", () => {
+    expect(isDestructiveToolCall("marketing", "run_shell")).toBe(false);
   });
 });
 
